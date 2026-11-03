@@ -8,12 +8,17 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-/** Where notifications go: 询盘设置's address, else what the theme gives (achord_inquiry_recipient), else admin_email. */
+/**
+ * Where notifications go: 询盘设置's address; only when none is saved, what the theme gives (achord_inquiry_recipient);
+ * else admin_email.
+ */
 function achord_inquiry_recipient(): string
 {
     $email = sanitize_email((string) achord_inquiry_options()['recipient']);
-    $email = is_email($email) ? $email : '';
-    $email = (string) apply_filters('achord_inquiry_recipient', $email);
+    if (is_email($email)) {
+        return $email;
+    }
+    $email = sanitize_email((string) apply_filters('achord_inquiry_recipient', ''));
     return is_email($email) ? $email : (string) get_option('admin_email');
 }
 

@@ -25,14 +25,16 @@
   const PARAMS = [...CLICK_IDS, 'gad_source', 'gad_campaignid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'];
   const FIELDS = [...PARAMS, 'landing', 'first_seen', 'referrer'];
 
-  // Google's consent state holds the regional default before any choice (an undocumented internal, so anything
-  // unexpected counts as unknown).
+  // Google's consent state (an undocumented internal, so anything unexpected counts as unknown). A choice the visitor
+  // made (update) counts either way. Before one, a granted default counts as agreed, but a denied default does not count
+  // as refusal: a consent tool may start every page denied and restore a returning visitor's saved choice a moment
+  // later, and reading that start as a refusal would delete their record.
   const googleAgreed = () => {
     try {
       const entry = window.google_tag_data?.ics?.entries?.ad_storage;
       if (!entry || typeof entry !== 'object') return null;
-      const value = entry.update !== undefined ? entry.update : entry.default;
-      return typeof value === 'boolean' ? value : null;
+      if (typeof entry.update === 'boolean') return entry.update;
+      return entry.default === true ? true : null;
     } catch {
       return null;
     }

@@ -48,9 +48,16 @@ r.window.google_tag_data = { ics: { entries: { ad_storage: { default: true } } }
 r.timers[0]();
 check(JSON.parse(r.store.get('bl_attr')).params.gclid === 'new', '谷歌同意后记下新点击');
 
-// 谷歌标签明确拒绝：删记录。
+// 访客明确拒绝（update 为 false）：删记录。
+r = run({ stored: saved, google: { gtag: () => {}, google_tag_data: { ics: { entries: { ad_storage: { default: true, update: false } } } } } });
+check(!r.store.has('bl_attr'), '访客明确拒绝时删记录');
+
+// 同意工具先把每页设成默认拒绝、稍后恢复老访客的同意：默认拒绝不算拒绝，不删记录。
 r = run({ stored: saved, google: { gtag: () => {}, google_tag_data: { ics: { entries: { ad_storage: { default: false } } } } } });
-check(!r.store.has('bl_attr'), '谷歌明确拒绝时删记录');
+check(r.store.has('bl_attr') && r.timers.length === 1, '默认拒绝时保留记录并继续等');
+r.window.google_tag_data.ics.entries.ad_storage.update = true;
+r.timers[0]();
+check(JSON.parse(r.store.get('bl_attr')).params.gclid === 'old', '恢复同意后原记录还在');
 
 // 主题说本站没有广告同意项：删记录。
 r = run({ stored: saved, consent: { tracking: true, advertising: false, agreed: () => true } });

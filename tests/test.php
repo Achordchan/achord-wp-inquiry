@@ -250,6 +250,16 @@ $GLOBALS['filters']['achord_inquiry_fields'] = fn($f) => $f + ['whatsapp' => ['l
 check(str_contains(achord_inquiry_admin_mail(['email' => 'e@f.test', 'whatsapp' => '+234 801'], 1)[1], '+234 801'), '主题加的字段进邮件');
 check(in_array('WhatsApp', array_column(achord_inquiry_dingtalk_message(1, ['email' => 'e@f.test', 'whatsapp' => '+234 801'])['fields'], 'label'), true), '主题加的字段进钉钉');
 
+// 收件人：后台填了就用后台的，主题给的只在没填时用。
+$GLOBALS['filters']['achord_inquiry_recipient'] = fn($e) => 'theme@site.test';
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['recipient'] = 'sales@site.test';
+check(achord_inquiry_recipient() === 'sales@site.test', '后台填的收件人优先于主题');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['recipient'] = '';
+check(achord_inquiry_recipient() === 'theme@site.test', '后台没填时用主题给的');
+unset($GLOBALS['filters']['achord_inquiry_recipient']);
+$GLOBALS['options']['admin_email'] = 'admin@site.test';
+check(achord_inquiry_recipient() === 'admin@site.test', '都没有时发给管理员邮箱');
+
 // 限流：同一 IP 十分钟内第 6 条要等。
 $GLOBALS['wpdb']->rows = [];
 $results = [];
