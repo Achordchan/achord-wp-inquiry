@@ -1,0 +1,24 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['8.0', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+      - name: Syntax
+        run: for f in $(git ls-files '*.php'); do php -l "$f" || exit 1; done
+      - name: Unit tests
+        run: php tests/test.php
+      - name: Script syntax
+        run: node --check assets/inquiry.js && node tests/inquiry.test.js
