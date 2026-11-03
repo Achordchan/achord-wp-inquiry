@@ -58,6 +58,7 @@ function esc_attr($s) { return htmlspecialchars((string) $s, ENT_QUOTES); }
 function esc_url($s) { return htmlspecialchars((string) $s, ENT_QUOTES); }
 function esc_url_raw($s) { return preg_match('#^(https?://|/)#', (string) $s) ? (string) $s : ''; }
 function wp_unslash($v) { return $v; }
+function wp_slash($v) { return addslashes((string) $v); }
 function wp_get_referer() { return $GLOBALS['referer'] ?? false; }
 function wp_specialchars_decode($s, $q = 0) { return htmlspecialchars_decode((string) $s, ENT_QUOTES); }
 function get_bloginfo($k) { return 'Test Site'; }
@@ -76,8 +77,9 @@ function wp_send_json_error($d = null, $s = 400) { throw new JsonExit(false, $d,
 function wp_die($m = '', $t = '', $a = []) { throw new JsonExit(false, ['message' => $m], 403); }
 function add_query_arg($k, $v, $u) { return $u . (str_contains($u, '?') ? '&' : '?') . $k . '=' . $v; }
 function post_type_exists($t) { return true; }
-function wp_insert_post($a, $e = false) { $GLOBALS['inserted'][] = $a; return count($GLOBALS['inserted']) + 100; }
-function update_post_meta($id, $k, $v) { $GLOBALS['meta'][$id][$k] = $v; return true; }
+function wp_insert_post($a, $e = false) { $a['post_title'] = stripslashes($a['post_title']); $GLOBALS['inserted'][] = $a; return count($GLOBALS['inserted']) + 100; }
+// 和 WordPress 一样，存之前先 unslash。
+function update_post_meta($id, $k, $v) { $GLOBALS['meta'][$id][$k] = stripslashes((string) $v); return true; }
 function get_post_meta($id, $k = '', $single = false) { return $k === '' ? array_map(fn($v) => [$v], $GLOBALS['meta'][$id] ?? []) : ($GLOBALS['meta'][$id][$k] ?? ''); }
 function wp_mail($to, $subject, $body, $headers = []) { $GLOBALS['mails'][] = compact('to', 'subject', 'body', 'headers'); return true; }
 function achord_dingtalk_dispatch($message, $source) { $GLOBALS['dingtalk'][] = [$message, $source]; }
@@ -215,7 +217,7 @@ check($r->success && $r->data['id'] === 0 && !$GLOBALS['mails'] && str_starts_wi
 
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['store_ip'] = '1';
 $r = submit([
-    'name' => 'Ana', 'email' => 'ana@client.test', 'phone' => '+1 555', 'product' => 'SQ5 Crane', 'message' => "Need 2 units\nto Lagos",
+    'name' => 'Ana', 'email' => 'ana@client.test', 'phone' => '+1 555', 'product' => 'SQ5 Crane', 'message' => "Need 2 units\nto Lagos, drawings in C:\\Projects\\crane",
     'source_entry' => 'Product page', 'source_title' => 'SQ5 | BOB-LIFT', 'boblift_lang' => 'es', 'boblift_touch' => '0',
     'boblift_attr_gclid' => 'click1', 'boblift_attr_utm_term' => 'knuckle', 'boblift_page_referrer' => 'www.google.com', 'boblift_ad_consent' => 'true',
 ]);
@@ -224,6 +226,7 @@ $saved = $GLOBALS['meta'][$id] ?? [];
 check($r->success && $id > 0 && $r->data['redirect'] === 'https://example.com/success.html?sent=' . $id, '成功：返回编号和带 ?sent= 的感谢页');
 check(($saved['_email'] ?? '') === 'ana@client.test' && ($saved['_attr_gclid'] ?? '') === 'click1' && ($saved['_channel'] ?? '') === 'Google Ads 广告 · 关键词 knuckle' && ($saved['_device'] ?? '') === '手机 · iPhone · Safari' && ($saved['_ip'] ?? '') === '192.0.2.10' && ($saved['_language'] ?? '') === 'es', '存下字段、来源、设备、IP、语言');
 check(($saved['_mail_sent'] ?? '') === '1', '记下邮件已发');
+check(str_ends_with($saved['_message'] ?? '', 'C:\\Projects\\crane'), '留言里的反斜杠原样存下');
 $mail = end($GLOBALS['mails']);
 check($mail['subject'] === '【测试站】询盘飞奔而来，请及时跟进：ana@client.test', '邮件主题带站点名');
 check(str_contains($mail['body'], '测试站收到一条新询盘') && str_contains($mail['body'], 'Google Ads 广告') && str_contains($mail['body'], '西班牙语') && str_contains($mail['body'], '192.0.2.10') && str_contains($mail['body'], "Need 2 units<br>\nto Lagos"), '邮件正文有来源、语言、IP、留言');

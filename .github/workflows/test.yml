@@ -21,4 +21,4 @@ jobs:
       - name: Unit tests
         run: php tests/test.php
       - name: Script syntax
-        run: node --check assets/inquiry.js
+        run: node --check assets/inquiry.js && node tests/inquiry.test.js

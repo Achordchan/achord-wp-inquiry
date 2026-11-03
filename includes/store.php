@@ -52,16 +52,18 @@ function achord_inquiry_save(array $fields, string $block_reason = '')
     $post_id = wp_insert_post([
         'post_type' => achord_inquiry_post_type(),
         'post_status' => $block_reason !== '' ? 'draft' : 'publish',
-        'post_title' => ($block_reason !== '' ? '[已拦截] ' : '') . $title,
+        // wp_insert_post() and update_post_meta() unslash what they are given; the values here are already unslashed,
+        // so they are slashed once more or a backslash the visitor typed (C:\Projects) would be lost.
+        'post_title' => wp_slash(($block_reason !== '' ? '[已拦截] ' : '') . $title),
     ], true);
     if (is_wp_error($post_id)) {
         return $post_id;
     }
     foreach ($fields as $key => $value) {
-        update_post_meta((int) $post_id, '_' . $key, is_scalar($value) ? (string) $value : '');
+        update_post_meta((int) $post_id, '_' . $key, wp_slash(is_scalar($value) ? (string) $value : ''));
     }
     if ($block_reason !== '') {
-        update_post_meta((int) $post_id, '_blocked', achord_inquiry_saved_block_reason($block_reason));
+        update_post_meta((int) $post_id, '_blocked', wp_slash(achord_inquiry_saved_block_reason($block_reason)));
     }
     return (int) $post_id;
 }

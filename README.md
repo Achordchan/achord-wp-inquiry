@@ -74,4 +74,5 @@ document.dispatchEvent(new Event('achord-inquiry:consent')); // 访客改了选�
 ```
 php tests/test.php
 node --check assets/inquiry.js
+node tests/inquiry.test.js
 ```

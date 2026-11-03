@@ -43,6 +43,7 @@
       return {
         tracking: given.tracking === true,
         advertising: given.advertising === true,
+        // The theme's word is definite: false here means no Google tag or no Ads ID on this site.
         agreed: () => {
           try {
             const value = typeof given.agreed === 'function' ? given.agreed() : null;
@@ -53,8 +54,10 @@
         },
       };
     }
+    // No banner of the theme's: Google's tag decides once it has loaded. Until then nothing is known (null), so nothing
+    // kept earlier is dropped while the tag is still on its way.
     const tagged = typeof window.gtag === 'function' || !!window.google_tag_data;
-    return { tracking: tagged, advertising: tagged, agreed: googleAgreed };
+    return { tracking: tagged ? true : null, advertising: tagged ? true : null, agreed: tagged ? googleAgreed : () => null };
   };
 
   // The site that linked to this page, host only (www. dropped); empty for this site's own pages and for direct visits.
@@ -125,10 +128,12 @@
 
   const settle = () => {
     const state = consent();
-    if (!state.tracking || !state.advertising) {
+    // Only a definite "no tracking" or "no advertising" (the theme says so) drops the record; unknown waits.
+    if (state.tracking === false || state.advertising === false) {
       forget();
       return false;
     }
+    if (state.tracking !== true || state.advertising !== true) return null;
     const agreed = state.agreed();
     if (agreed === true) {
       if (!arrivalHandled) {
@@ -164,7 +169,7 @@
     const values = record ? { ...record.params, landing: clean(record.landing, 300), first_seen: clean(record.first_seen, 40), referrer: bareHost(clean(record.referrer, 120)) } : {};
     FIELDS.forEach((name) => setField(form, `${PREFIX}attr_${name}`, values[name] || ''));
     setField(form, `${PREFIX}page_referrer`, externalReferrer());
-    setField(form, `${PREFIX}ad_consent`, state.tracking && state.advertising && typeof agreed === 'boolean' ? String(agreed) : '');
+    setField(form, `${PREFIX}ad_consent`, state.tracking === true && state.advertising === true && typeof agreed === 'boolean' ? String(agreed) : '');
     setField(form, `${PREFIX}touch`, navigator.maxTouchPoints > 1 ? '1' : '0');
   };
 
