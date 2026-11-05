@@ -290,16 +290,17 @@ class FakeRestRequest
     public function get_body_params() { return $this->body; }
     public function get_query_params() { return $this->query; }
 }
-check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['id' => 501, 'meta' => ['boblift_inquiry_invalid' => '与产品无关']])), '只带无效标记的更新放行');
-check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => '']])), '清空标记也放行');
-check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['title' => 'x', 'meta' => ['boblift_inquiry_invalid' => 'spam']])), '顺带改标题的拒绝');
-check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['status' => 'draft'])), '改状态的拒绝');
-check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => 'spam', 'jetpack_seo_noindex' => true]])), '顺带改别的 meta 的拒绝');
-check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => ['x']]])), '标记不是文字的拒绝');
-check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => 'spam']], [], ['title' => 'changed', 'status' => 'publish'])), '网址参数里顺带改标题/状态的拒绝');
-check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest([], [], ['meta' => ['jetpack_seo_noindex' => true]])), '网址参数里塞别的 meta 的拒绝');
-check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => 'spam']], [], ['context' => 'edit', '_fields' => 'id,meta'])), '网址里只有 context/_fields 照样放行');
-check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest([], ['meta' => ['boblift_inquiry_invalid' => 'spam'], '_wpnonce' => 'abc'], ['_wpnonce' => 'abc'])), '带 _wpnonce（后台 Cookie 登录）照样放行');
+$writable = ['date', 'date_gmt', 'slug', 'status', 'password', 'title', 'content', 'author', 'excerpt', 'meta', 'template', 'id'];
+$refused = fn(array $json, array $body = [], array $query = []) => achord_inquiry_rest_update_refused_params(new FakeRestRequest($json, $body, $query), $writable);
+check($refused(['id' => 501, 'meta' => ['boblift_inquiry_invalid' => '与产品无关']]) === [], '只带无效标记的更新放行');
+check($refused(['meta' => ['boblift_inquiry_invalid' => '']]) === [], '清空标记也放行');
+check($refused(['title' => 'x', 'meta' => ['boblift_inquiry_invalid' => 'spam']]) === ['title'], '顺带改标题的拒绝');
+check($refused(['status' => 'draft']) === ['status', 'meta.boblift_inquiry_invalid (missing)'], '改状态的拒绝');
+check($refused(['meta' => ['boblift_inquiry_invalid' => 'spam', 'jetpack_seo_noindex' => true]]) === ['meta.jetpack_seo_noindex'], '顺带改别的 meta 的拒绝');
+check($refused(['meta' => ['boblift_inquiry_invalid' => ['x']]]) === ['meta.boblift_inquiry_invalid (not text)'], '标记不是文字的拒绝');
+check($refused(['meta' => ['boblift_inquiry_invalid' => 'spam']], [], ['title' => 'changed', 'status' => 'publish']) === ['status', 'title'], '网址参数里顺带改标题/状态的拒绝');
+check($refused([], [], ['meta' => ['jetpack_seo_noindex' => true]]) === ['meta.boblift_inquiry_invalid (missing)', 'meta.jetpack_seo_noindex'], '网址参数里塞别的 meta 的拒绝');
+check($refused(['meta' => ['boblift_inquiry_invalid' => 'spam']], ['_wpnonce' => 'abc'], ['context' => 'edit', '_fields' => 'id,meta', 'http_envelope' => '1']) === [], '不写入的参数（context、_fields、_wpnonce、代理自带参数）照样放行');
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);

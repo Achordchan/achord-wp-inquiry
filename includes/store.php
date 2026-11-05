@@ -95,8 +95,10 @@ if (class_exists('WP_REST_Posts_Controller')) {
         /** The one write: an administrator may set or clear the invalid flag (meta.<rest_record>_invalid), nothing else. */
         public function update_item_permissions_check($request)
         {
-            if (!achord_inquiry_can_read() || !achord_inquiry_rest_update_is_invalid_flag_only($request)) {
-                return achord_inquiry_rest_error('achord_inquiry_read_only', 'Inquiries are read-only; only meta.' . achord_inquiry_invalid_rest_name() . ' can be written.', 403);
+            $writable = array_keys($this->get_endpoint_args_for_item_schema(WP_REST_Server::EDITABLE));
+            $refused = achord_inquiry_rest_update_refused_params($request, $writable);
+            if (!achord_inquiry_can_read() || $refused !== []) {
+                return achord_inquiry_rest_error('achord_inquiry_read_only', 'Inquiries are read-only; only meta.' . achord_inquiry_invalid_rest_name() . ' can be written. Refused: ' . implode(', ', $refused), 403);
             }
             return parent::update_item_permissions_check($request);
         }
@@ -115,22 +117,34 @@ function achord_inquiry_invalid_rest_name(): string
 }
 
 /**
- * True when an update request carries nothing but meta.<rest_record>_invalid (a string), so no other field can change.
- * The query string counts too: the posts controller reads ?title=…&status=… as readily as the body.
+ * What an update request would write besides meta.<rest_record>_invalid: a writable post field (title, status, …) in the
+ * query string, form body or JSON, any other meta key, or a flag that is not text. Empty means only the flag changes.
+ * Parameters the controller does not write (context, _fields, a proxy's own extras) are left alone; $writable is the
+ * controller's own list of editable fields, so a field WordPress adds later is refused too.
  */
-function achord_inquiry_rest_update_is_invalid_flag_only($request): bool
+function achord_inquiry_rest_update_refused_params($request, array $writable): array
 {
     $params = array_merge((array) $request->get_query_params(), (array) $request->get_body_params(), (array) $request->get_json_params());
+    $refused = [];
+    foreach ($writable as $key) {
+        if ($key !== 'id' && $key !== 'meta' && array_key_exists($key, $params)) {
+            $refused[] = (string) $key;
+        }
+    }
+    $flag = achord_inquiry_invalid_rest_name();
     $meta = $params['meta'] ?? null;
-    // The route's id, the read-side controls and the cookie-auth nonce change nothing on the inquiry.
-    foreach (['id', 'meta', 'context', '_fields', '_envelope', '_locale', '_method', '_wpnonce'] as $key) {
-        unset($params[$key]);
+    $meta = is_array($meta) ? $meta : [];
+    if (!array_key_exists($flag, $meta)) {
+        $refused[] = 'meta.' . $flag . ' (missing)';
+    } elseif (!is_string($meta[$flag])) {
+        $refused[] = 'meta.' . $flag . ' (not text)';
     }
-    if ($params !== [] || !is_array($meta) || count($meta) !== 1) {
-        return false;
+    foreach (array_keys($meta) as $key) {
+        if ($key !== $flag) {
+            $refused[] = 'meta.' . $key;
+        }
     }
-    $value = $meta[achord_inquiry_invalid_rest_name()] ?? null;
-    return is_string($value);
+    return $refused;
 }
 
 /**
@@ -300,7 +314,7 @@ function achord_inquiry_store_hooks(): void
             'auth_callback' => '__return_false',
         ]);
     }, 20);
-    // The invalid flag, the one field the connector may write (achord_inquiry_rest_update_is_invalid_flag_only()).
+    // The invalid flag, the one field the connector may write (achord_inquiry_rest_update_refused_params()).
     add_action('init', static function () use ($type): void {
         register_post_meta($type, '_invalid', [
             'type' => 'string',
