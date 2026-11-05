@@ -274,5 +274,27 @@ function wp_get_document_title() { return 'Contact | BOB-LIFT'; }
 $hidden = achord_inquiry_hidden_fields(['json' => true, 'source' => 'Header button', 'language' => 'fr']);
 check(str_contains($hidden, 'name="action" value="boblift_submit_inquiry"') && str_contains($hidden, 'name="boblift_inquiry_response" value="json"') && str_contains($hidden, 'name="boblift_lang" value="fr"') && str_contains($hidden, 'name="boblift_inquiry_nonce"') && str_contains($hidden, 'name="boblift_inquiry_website"') && str_contains($hidden, 'value="Header button"'), '隐藏字段齐全');
 
+// 标为无效：只改这一个标记，询盘本身不动；接口只认 meta.<rest_record>_invalid。
+function delete_post_meta($id, $k) { unset($GLOBALS['meta'][$id][$k]); return true; }
+$GLOBALS['theme_support']['achord-inquiry'][0]['rest_record'] = 'boblift_inquiry';
+check(achord_inquiry_invalid_rest_name() === 'boblift_inquiry_invalid', '无效标记的接口名跟着 rest_record');
+$GLOBALS['meta'][501] = ['_name' => 'Cynrhia', '_message' => 'What is best for farming dry land'];
+achord_inquiry_set_invalid(501, ' 与产品无关 ');
+check(achord_inquiry_record(501)['invalid'] === '与产品无关' && achord_inquiry_record(501)['name'] === 'Cynrhia', '标为无效后记录里带 invalid，其他字段不变');
+achord_inquiry_set_invalid(501, '');
+check(!isset(achord_inquiry_record(501)['invalid']), '清空原因即恢复有效');
+class FakeRestRequest
+{
+    public function __construct(private array $json, private array $body = []) {}
+    public function get_json_params() { return $this->json; }
+    public function get_body_params() { return $this->body; }
+}
+check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['id' => 501, 'meta' => ['boblift_inquiry_invalid' => '与产品无关']])), '只带无效标记的更新放行');
+check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => '']])), '清空标记也放行');
+check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['title' => 'x', 'meta' => ['boblift_inquiry_invalid' => 'spam']])), '顺带改标题的拒绝');
+check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['status' => 'draft'])), '改状态的拒绝');
+check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => 'spam', 'jetpack_seo_noindex' => true]])), '顺带改别的 meta 的拒绝');
+check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => ['x']]])), '标记不是文字的拒绝');
+
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);
