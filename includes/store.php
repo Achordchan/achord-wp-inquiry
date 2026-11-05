@@ -92,9 +92,13 @@ if (class_exists('WP_REST_Posts_Controller')) {
             return achord_inquiry_rest_error('achord_inquiry_read_only', 'Inquiries are read-only here; manage them in wp-admin.', 403);
         }
 
+        /** The one write: an administrator may set or clear the invalid flag (meta.<rest_record>_invalid), nothing else. */
         public function update_item_permissions_check($request)
         {
-            return achord_inquiry_rest_error('achord_inquiry_read_only', 'Inquiries are read-only here; manage them in wp-admin.', 403);
+            if (!achord_inquiry_can_read() || !achord_inquiry_rest_update_is_invalid_flag_only($request)) {
+                return achord_inquiry_rest_error('achord_inquiry_read_only', 'Inquiries are read-only; only meta.' . achord_inquiry_invalid_rest_name() . ' can be written.', 403);
+            }
+            return parent::update_item_permissions_check($request);
         }
 
         public function delete_item_permissions_check($request)
@@ -102,6 +106,45 @@ if (class_exists('WP_REST_Posts_Controller')) {
             return achord_inquiry_rest_error('achord_inquiry_read_only', 'Inquiries are read-only here; manage them in wp-admin.', 403);
         }
     }
+}
+
+/** The REST name of the invalid flag: meta.<rest_record>_invalid (meta.boblift_inquiry_invalid on the crane site). */
+function achord_inquiry_invalid_rest_name(): string
+{
+    return (string) achord_inquiry_config()['rest_record'] . '_invalid';
+}
+
+/**
+ * True when an update request carries nothing but meta.<rest_record>_invalid (a string), so no other field can change.
+ * The query string counts too: the posts controller reads ?title=…&status=… as readily as the body.
+ */
+function achord_inquiry_rest_update_is_invalid_flag_only($request): bool
+{
+    $params = array_merge((array) $request->get_query_params(), (array) $request->get_body_params(), (array) $request->get_json_params());
+    $meta = $params['meta'] ?? null;
+    // The route's id, the read-side controls and the cookie-auth nonce change nothing on the inquiry.
+    foreach (['id', 'meta', 'context', '_fields', '_envelope', '_locale', '_method', '_wpnonce'] as $key) {
+        unset($params[$key]);
+    }
+    if ($params !== [] || !is_array($meta) || count($meta) !== 1) {
+        return false;
+    }
+    $value = $meta[achord_inquiry_invalid_rest_name()] ?? null;
+    return is_string($value);
+}
+
+/**
+ * Mark an inquiry invalid (a reason such as 与产品无关) or valid again (''). The inquiry stays as it was; the flag only
+ * tells reports and the list that it is not a real lead.
+ */
+function achord_inquiry_set_invalid(int $post_id, string $reason): void
+{
+    $reason = trim(sanitize_text_field($reason));
+    if ($reason === '') {
+        delete_post_meta($post_id, '_invalid');
+        return;
+    }
+    update_post_meta($post_id, '_invalid', wp_slash($reason));
 }
 
 function achord_inquiry_can_read(): bool
@@ -146,6 +189,7 @@ function achord_inquiry_admin_labels(): array
         'language' => '页面语言',
         'ip' => 'IP 地址',
         'blocked' => '黑名单拦截',
+        'invalid' => '已标无效',
     ];
     foreach (ACHORD_INQUIRY_ATTRIBUTION_LABELS as $name => $label) {
         $labels['attr_' . $name] = '广告来源 · ' . $label;
@@ -166,7 +210,7 @@ function achord_inquiry_meta_box(WP_Post $post): void
     echo '<p style="margin:0 0 12px;color:#646970">这是前台询盘表单生成的只读详情，不需要像文章一样编辑标题或正文。</p>';
     echo '<button type="button" class="button button-primary" style="margin:0 0 12px" onclick="navigator.clipboard && navigator.clipboard.writeText(this.dataset.copy);this.textContent=\'已复制客户信息\';" data-copy="' . esc_attr(implode("\n", $copy)) . '">复制客户信息</button>';
     echo '<table class="widefat striped"><tbody>';
-    $optional = ['blocked', 'lead_type', 'language', 'page_referrer'];
+    $optional = ['blocked', 'invalid', 'lead_type', 'language', 'page_referrer'];
     foreach ($labels as $key => $label) {
         $value = (string) get_post_meta($post->ID, '_' . $key, true);
         // Ad attribution exists only for visitors who came from an ad and agreed to advertising cookies.
@@ -199,6 +243,10 @@ function achord_inquiry_column_content(string $column, int $post_id): void
             $blocked = $meta('blocked');
             if ($blocked !== '') {
                 echo '<span style="display:inline-block;margin:0 0 4px;padding:1px 6px;border:1px solid #64748b;border-radius:2px;color:#475569;font-weight:600">已拦截 · ' . esc_html($blocked) . '</span><br>';
+            }
+            $invalid = $meta('invalid');
+            if ($invalid !== '') {
+                echo '<span style="display:inline-block;margin:0 0 4px;padding:1px 6px;border:1px solid #b45309;border-radius:2px;color:#92400e;font-weight:600">无效 · ' . esc_html($invalid) . '</span><br>';
             }
             $name = $meta('name');
             echo '<strong><a class="row-title" href="' . esc_url((string) get_edit_post_link($post_id)) . '">' . esc_html($name !== '' ? $name : get_the_title($post_id)) . '</a></strong>';
@@ -252,6 +300,37 @@ function achord_inquiry_store_hooks(): void
             'auth_callback' => '__return_false',
         ]);
     }, 20);
+    // The invalid flag, the one field the connector may write (achord_inquiry_rest_update_is_invalid_flag_only()).
+    add_action('init', static function () use ($type): void {
+        register_post_meta($type, '_invalid', [
+            'type' => 'string',
+            'single' => true,
+            'description' => 'Why this inquiry is not a real lead (spam, unrelated, test); empty when it is one.',
+            'show_in_rest' => ['name' => achord_inquiry_invalid_rest_name(), 'schema' => ['type' => 'string', 'context' => ['edit']]],
+            'sanitize_callback' => static fn($value): string => trim(sanitize_text_field((string) $value)),
+            'auth_callback' => static fn(): bool => achord_inquiry_can_read(),
+        ]);
+    }, 20);
+    // 「标为无效 / 恢复有效」in the list's row actions.
+    add_filter('post_row_actions', static function (array $actions, $post) use ($type): array {
+        if (!$post instanceof WP_Post || $post->post_type !== $type || !achord_inquiry_can_read()) {
+            return $actions;
+        }
+        $invalid = (string) get_post_meta($post->ID, '_invalid', true) !== '';
+        $url = wp_nonce_url(admin_url('admin-post.php?action=achord_inquiry_invalid&post=' . $post->ID . '&mark=' . ($invalid ? '0' : '1')), 'achord_inquiry_invalid_' . $post->ID);
+        $actions['achord_inquiry_invalid'] = '<a href="' . esc_url($url) . '">' . ($invalid ? '恢复有效' : '标为无效') . '</a>';
+        return $actions;
+    }, 10, 2);
+    add_action('admin_post_achord_inquiry_invalid', static function () use ($type): void {
+        $post_id = (int) ($_GET['post'] ?? 0);
+        if (!achord_inquiry_can_read() || get_post_type($post_id) !== $type) {
+            wp_die('无权操作这条询盘。', 403);
+        }
+        check_admin_referer('achord_inquiry_invalid_' . $post_id);
+        achord_inquiry_set_invalid($post_id, ($_GET['mark'] ?? '') === '1' ? '后台人工标记' : '');
+        wp_safe_redirect(wp_get_referer() ?: admin_url('edit.php?post_type=' . $type));
+        exit;
+    });
     add_filter('get_post_metadata', static function ($value, $post_id, $key) use ($type, $record) {
         if ($key !== $record || get_post_type((int) $post_id) !== $type) {
             return $value;
