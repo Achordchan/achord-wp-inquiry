@@ -114,13 +114,19 @@ function achord_inquiry_invalid_rest_name(): string
     return (string) achord_inquiry_config()['rest_record'] . '_invalid';
 }
 
-/** True when an update request carries nothing but meta.<rest_record>_invalid (a string), so no other field can change. */
+/**
+ * True when an update request carries nothing but meta.<rest_record>_invalid (a string), so no other field can change.
+ * The query string counts too: the posts controller reads ?title=…&status=… as readily as the body.
+ */
 function achord_inquiry_rest_update_is_invalid_flag_only($request): bool
 {
-    $body = array_merge((array) $request->get_body_params(), (array) $request->get_json_params());
-    $meta = $body['meta'] ?? null;
-    unset($body['id'], $body['meta']);
-    if ($body !== [] || !is_array($meta) || count($meta) !== 1) {
+    $params = array_merge((array) $request->get_query_params(), (array) $request->get_body_params(), (array) $request->get_json_params());
+    $meta = $params['meta'] ?? null;
+    // The route's id and the read-side controls change nothing on the inquiry.
+    foreach (['id', 'meta', 'context', '_fields', '_envelope', '_locale', '_method'] as $key) {
+        unset($params[$key]);
+    }
+    if ($params !== [] || !is_array($meta) || count($meta) !== 1) {
         return false;
     }
     $value = $meta[achord_inquiry_invalid_rest_name()] ?? null;

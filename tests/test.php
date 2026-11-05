@@ -285,9 +285,10 @@ achord_inquiry_set_invalid(501, '');
 check(!isset(achord_inquiry_record(501)['invalid']), '清空原因即恢复有效');
 class FakeRestRequest
 {
-    public function __construct(private array $json, private array $body = []) {}
+    public function __construct(private array $json, private array $body = [], private array $query = []) {}
     public function get_json_params() { return $this->json; }
     public function get_body_params() { return $this->body; }
+    public function get_query_params() { return $this->query; }
 }
 check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['id' => 501, 'meta' => ['boblift_inquiry_invalid' => '与产品无关']])), '只带无效标记的更新放行');
 check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => '']])), '清空标记也放行');
@@ -295,6 +296,9 @@ check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['tit
 check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['status' => 'draft'])), '改状态的拒绝');
 check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => 'spam', 'jetpack_seo_noindex' => true]])), '顺带改别的 meta 的拒绝');
 check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => ['x']]])), '标记不是文字的拒绝');
+check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => 'spam']], [], ['title' => 'changed', 'status' => 'publish'])), '网址参数里顺带改标题/状态的拒绝');
+check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest([], [], ['meta' => ['jetpack_seo_noindex' => true]])), '网址参数里塞别的 meta 的拒绝');
+check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => 'spam']], [], ['context' => 'edit', '_fields' => 'id,meta'])), '网址里只有 context/_fields 照样放行');
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);
