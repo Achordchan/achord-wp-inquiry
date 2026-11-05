@@ -122,8 +122,8 @@ function achord_inquiry_rest_update_is_invalid_flag_only($request): bool
 {
     $params = array_merge((array) $request->get_query_params(), (array) $request->get_body_params(), (array) $request->get_json_params());
     $meta = $params['meta'] ?? null;
-    // The route's id and the read-side controls change nothing on the inquiry.
-    foreach (['id', 'meta', 'context', '_fields', '_envelope', '_locale', '_method'] as $key) {
+    // The route's id, the read-side controls and the cookie-auth nonce change nothing on the inquiry.
+    foreach (['id', 'meta', 'context', '_fields', '_envelope', '_locale', '_method', '_wpnonce'] as $key) {
         unset($params[$key]);
     }
     if ($params !== [] || !is_array($meta) || count($meta) !== 1) {

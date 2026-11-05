@@ -299,6 +299,7 @@ check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['met
 check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => 'spam']], [], ['title' => 'changed', 'status' => 'publish'])), '网址参数里顺带改标题/状态的拒绝');
 check(!achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest([], [], ['meta' => ['jetpack_seo_noindex' => true]])), '网址参数里塞别的 meta 的拒绝');
 check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest(['meta' => ['boblift_inquiry_invalid' => 'spam']], [], ['context' => 'edit', '_fields' => 'id,meta'])), '网址里只有 context/_fields 照样放行');
+check(achord_inquiry_rest_update_is_invalid_flag_only(new FakeRestRequest([], ['meta' => ['boblift_inquiry_invalid' => 'spam'], '_wpnonce' => 'abc'], ['_wpnonce' => 'abc'])), '带 _wpnonce（后台 Cookie 登录）照样放行');
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);
