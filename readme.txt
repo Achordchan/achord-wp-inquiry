@@ -3,12 +3,15 @@ Contributors: achord
 Requires at least: 6.2
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 0.2.0
+Stable tag: 0.2.1
 License: GPLv2 or later
 
 网站询盘的后台：接收、防垃圾、来源渠道、存储、通知邮件、钉钉。表单外观由主题负责。
 
 == Changelog ==
+
+= 0.2.1 =
+* 只写无效标记的校验改为对照文章接口自己的可写字段清单：WordPress.com 连接器经代理转发时带的额外参数不再被误拒；被拒时错误信息列出是哪些字段。
 
 = 0.2.0 =
 * 询盘可「标为无效」（垃圾、与产品无关、测试）：后台列表行操作「标为无效 / 恢复有效」，列表显示「无效 · 原因」；管理员可经接口只写 meta.<rest_record>_invalid 一个字段（其他字段仍只读），记录里多出 invalid。询盘本身、状态、通知都不动。
