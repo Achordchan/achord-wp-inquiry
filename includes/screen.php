@@ -162,9 +162,17 @@ function achord_inquiry_ai_prompt(): string
 /** Ask the model; null when it is not set up, fails, or answers out of shape. */
 function achord_inquiry_ai_assess(array $fields, array $facts, int $max_seconds = 60): ?array
 {
+    return achord_inquiry_ai_request($fields, $facts, $max_seconds)['answer'];
+}
+
+/**
+ * One call to the model: ['answer' => the verdict or null, 'error' => why there is none (for the test button)].
+ */
+function achord_inquiry_ai_request(array $fields, array $facts, int $max_seconds = 60): array
+{
     $config = achord_inquiry_ai_config();
     if ($config === null) {
-        return null;
+        return ['answer' => null, 'error' => 'Base URL（https）、API Key、模型三项没填全'];
     }
     $inquiry = [];
     foreach (['name', 'email', 'phone', 'company', 'website', 'country', 'product', 'quantity', 'message', 'language'] as $name) {
@@ -183,8 +191,12 @@ function achord_inquiry_ai_assess(array $fields, array $facts, int $max_seconds 
             'messages' => [['role' => 'system', 'content' => achord_inquiry_ai_prompt()], ['role' => 'user', 'content' => $user]],
         ]),
     ]);
-    if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) !== 200) {
-        return null;
+    if (is_wp_error($response)) {
+        return ['answer' => null, 'error' => '连不上接口：' . $response->get_error_message()];
+    }
+    $code = (int) wp_remote_retrieve_response_code($response);
+    if ($code !== 200) {
+        return ['answer' => null, 'error' => '接口返回 HTTP ' . $code . '：' . mb_substr(wp_strip_all_tags((string) wp_remote_retrieve_body($response)), 0, 300)];
     }
     $body = json_decode((string) wp_remote_retrieve_body($response), true);
     $text = (string) ($body['choices'][0]['message']['content'] ?? '');
@@ -196,18 +208,37 @@ function achord_inquiry_ai_assess(array $fields, array $facts, int $max_seconds 
     // Only an explicit yes or no counts; anything else (null, "maybe") is no answer, and the rules decide.
     $raw = is_array($answer) ? ($answer['spam'] ?? null) : null;
     if (!is_bool($raw) && !in_array($raw, ['true', 'false'], true)) {
-        return null;
+        return ['answer' => null, 'error' => '接口通了，但模型没按要求回答 JSON：' . mb_substr($text !== '' ? $text : (string) wp_remote_retrieve_body($response), 0, 300)];
     }
     $spam = $raw === true || $raw === 'true';
     $stars = $spam ? 0 : max(1, min(5, (int) ($answer['stars'] ?? 3)));
     $clean = static fn($value, int $length): string => mb_substr(trim(sanitize_text_field(is_scalar($value) ? (string) $value : '')), 0, $length);
-    return [
+    return ['answer' => [
         'spam' => $spam,
         'reason' => $spam ? ($clean($answer['reason'] ?? '', 200) ?: 'AI 判定为垃圾') : '',
         'stars' => $stars,
         'summary' => $clean($answer['summary'] ?? '', 300),
         'by' => 'AI（' . $config['model'] . '）',
+    ], 'error' => ''];
+}
+
+/**
+ * The settings page's test: two sample inquiries (a real buyer, a mass-mailed scam) through the saved settings, with
+ * how long each took. Nothing is saved or sent.
+ */
+function achord_inquiry_ai_test(): array
+{
+    $samples = [
+        '真实买家样例' => ['name' => 'Juan Dela Cruz', 'email' => 'juan@example.com', 'country' => 'Philippines', 'message' => 'Hello, we need a 5 ton knuckle boom crane to mount on our Isuzu FVR truck for building materials delivery. Please send price CIF Manila and delivery time.'],
+        '群发骗局样例' => ['name' => 'Bill', 'email' => 'bill@example.net', 'message' => 'Dear Sir, kindly send your latest catalogue and price list with MOQ. Are you the right person to discuss? Please confirm a Zoom meeting this week.'],
     ];
+    $results = [];
+    foreach ($samples as $label => $fields) {
+        $start = microtime(true);
+        $result = achord_inquiry_ai_request($fields, ['说明' => '这是后台「测试连接」发的样例询盘，不是真实询盘'], 60);
+        $results[] = ['label' => $label, 'seconds' => round(microtime(true) - $start, 1)] + $result;
+    }
+    return $results;
 }
 
 /**
@@ -218,9 +249,9 @@ function achord_inquiry_screen(array $fields, string $ip): array
 {
     $ai_set = achord_inquiry_ai_config() !== null;
     if ($ai_set) {
-        // One budget for the whole screening (lookups and AI), well inside a host's request limit; the AI gets what the
-        // lookups leave, and none at all when fewer than 5 seconds are left.
-        $deadline = microtime(true) + (float) apply_filters('achord_inquiry_screen_budget', 40);
+        // One budget for the whole screening (lookups and AI), run after the visitor already has their answer; the AI
+        // gets what the lookups leave, and none at all when fewer than 5 seconds are left.
+        $deadline = microtime(true) + (float) apply_filters('achord_inquiry_screen_budget', 90);
         $facts = achord_inquiry_screen_facts($fields, $ip, $deadline);
         $left = (int) floor($deadline - microtime(true));
         $answer = $left >= 5 ? achord_inquiry_ai_assess($fields, $facts, $left) : null;

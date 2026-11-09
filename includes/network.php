@@ -39,7 +39,7 @@ function achord_inquiry_ip_in_range(string $ip, string $range): bool
 }
 
 /**
- * The sender's IP while finishing an earlier submission from WP-Cron (achord_inquiry_handle_unscreened()): the IP saved
+ * The sender's IP while finishing an earlier submission from WP-Cron (achord_inquiry_screen_saved()): the IP saved
  * with the inquiry, or '' when IP storage is off, stands in for the cron request's own address. null when not set.
  */
 function achord_inquiry_ip_override(?string $ip = null, bool $reset = false): ?string

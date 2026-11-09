@@ -84,9 +84,9 @@ function achord_inquiry_settings_page(): void
     echo '<tr><th scope="row">AI 判断与背调</th><td>';
     echo '<p><input class="regular-text" type="url" name="' . $name('ai_base_url') . '" value="' . esc_attr($options['ai_base_url']) . '" placeholder="Base URL，例如 https://api.openai.com/v1"></p>';
     echo '<p><input class="regular-text" type="password" autocomplete="new-password" name="' . $name('ai_api_key') . '" value="' . esc_attr($options['ai_api_key']) . '" placeholder="API Key"></p>';
-    echo '<p><input class="small-text" type="number" min="5" max="60" name="' . $name('ai_timeout') . '" value="' . esc_attr($options['ai_timeout']) . '"> 秒内没答复就改用规则（访客提交时要等这么久，默认 30 秒；连同查 IP、域名在内整个判断最多 40 秒，中途断开也不会丢询盘，3 分钟后会补发通知）</p>';
+    echo '<p><input class="small-text" type="number" min="5" max="60" name="' . $name('ai_timeout') . '" value="' . esc_attr($options['ai_timeout']) . '"> 秒内没答复就改用规则（默认 30 秒）。访客不用等：询盘存好就显示提交成功，判断在后台跑，只是邮件和钉钉晚这么几十秒到；后台中途断开也不会丢，3 分钟后补发。</p>';
     echo '<p><input class="regular-text" type="text" name="' . $name('ai_model') . '" value="' . esc_attr($options['ai_model']) . '" placeholder="模型，例如 gpt-4o-mini"></p>';
-    echo '<p class="description">三项都填（OpenAI 兼容的 /chat/completions 接口，只认 https）才启用。每条询盘先由服务器查 IP 归属、邮箱域名官网和注册日期、来源渠道，再交给 AI 判断：垃圾询盘不发邮件、钉钉只推「拦截一条垃圾询盘，原因 …」、标无效、不算转化（误判点「恢复有效」会补发邮件）；正常询盘在邮件和钉钉里带 1–5 星优质度和一句背调。AI 出错或超时时改用上面的规则。不填就不调用 AI。</p></td></tr>';
+    echo '<p class="description">三项都填（OpenAI 兼容的 /chat/completions 接口，只认 https）才启用。每条询盘先由服务器查 IP 归属、邮箱域名官网和注册日期、来源渠道，再交给 AI 判断：垃圾询盘不发邮件、钉钉只推「拦截一条垃圾询盘，原因 …」、标无效、不算转化（误判点「恢复有效」会补发邮件）；正常询盘在邮件和钉钉里带 1–5 星优质度和一句背调。AI 出错或超时时改用上面的规则。不填就不调用 AI。填好保存后用下面的「测试连接」检查。</p></td></tr>';
 
     echo '<tr><th scope="row">保存 IP</th><td>';
     $checkbox('store_ip', '询盘保存访客 IP');
@@ -94,5 +94,40 @@ function achord_inquiry_settings_page(): void
 
     echo '</tbody></table>';
     submit_button();
+    echo '</form>';
+
+    // The test button: its own form, so it never saves the settings above. It uses what is saved.
+    echo '<h2>测试 AI 连接</h2><p>先点上面的「保存更改」，再点测试：用已保存的设置发两条样例询盘（一条真实买家、一条群发骗局）给 AI，显示结果和耗时。不会存询盘、不发邮件和钉钉。</p>';
+    $results = get_transient('achord_inquiry_ai_test_' . get_current_user_id());
+    if (is_array($results)) {
+        delete_transient('achord_inquiry_ai_test_' . get_current_user_id());
+        foreach ($results as $result) {
+            $answer = $result['answer'] ?? null;
+            if (is_array($answer)) {
+                $text = $answer['spam'] ? '判为垃圾：' . $answer['reason'] : '正常询盘 ' . achord_inquiry_stars_text((int) $answer['stars']) . ($answer['summary'] !== '' ? '，' . $answer['summary'] : '');
+                $class = 'notice-success';
+            } else {
+                $text = '失败：' . (string) ($result['error'] ?? '');
+                $class = 'notice-error';
+            }
+            echo '<div class="notice ' . $class . ' inline"><p><strong>' . esc_html((string) $result['label']) . '</strong>（' . esc_html((string) $result['seconds']) . ' 秒）：' . esc_html($text) . '</p></div>';
+        }
+    }
+    echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="achord_inquiry_ai_test">';
+    wp_nonce_field('achord_inquiry_ai_test');
+    submit_button('测试连接', 'secondary', 'submit', false);
     echo '</form></div>';
 }
+
+add_action('admin_post_achord_inquiry_ai_test', static function (): void {
+    if (!current_user_can('manage_options')) {
+        wp_die('无权操作。', 403);
+    }
+    check_admin_referer('achord_inquiry_ai_test');
+    if (function_exists('set_time_limit')) {
+        @set_time_limit(150);
+    }
+    set_transient('achord_inquiry_ai_test_' . get_current_user_id(), achord_inquiry_ai_test(), 300);
+    wp_safe_redirect(admin_url('options-general.php?page=achord-inquiry'));
+    exit;
+});
