@@ -30,7 +30,9 @@ class JsonExit extends Exception
 class WP_Error
 {
     public function __construct(public string $code = '', public string $message = '', public $data = null) {}
+    public function get_error_message() { return $this->message; }
 }
+function wp_strip_all_tags($s) { return strip_tags((string) $s); }
 class WP_Post
 {
     public int $ID = 0;
@@ -228,6 +230,13 @@ function submit(array $post): JsonExit
     try {
         achord_inquiry_handle();
     } catch (JsonExit $e) {
+        // 访客先拿到答复，判断和通知在后台（WP-Cron）跑：这里模拟 cron 紧接着执行。
+        foreach (array_keys($GLOBALS['scheduled'] ?? []) as $key) {
+            if (str_starts_with($key, 'achord_inquiry_screen_now')) {
+                unset($GLOBALS['scheduled'][$key]);
+                achord_inquiry_screen_saved((int) json_decode(substr($key, strlen('achord_inquiry_screen_now')), true)[0]);
+            }
+        }
         return $e;
     }
     throw new RuntimeException('handler did not answer');
@@ -445,52 +454,52 @@ check(count($GLOBALS['safe_gets']) === 2, '查客户域名官网和 RDAP 都走 
 check(empty($GLOBALS['scheduled']), '判断做完就撤掉兜底定时任务');
 // 兜底：先存后判；请求中途断开时，3 分钟后补发通知。
 $GLOBALS['mails'] = [];
-$GLOBALS['meta'][701] = ['_name' => 'Cut', '_email' => 'cut@client.test', '_message' => 'Need 5 ton crane'];
-achord_inquiry_handle_unscreened(701);
-check(count($GLOBALS['mails']) === 1 && ($GLOBALS['meta'][701]['_screen_verdict'] ?? '') === 'unfinished', '判断没做完的询盘：兜底补发通知');
-achord_inquiry_handle_unscreened(701);
+$GLOBALS['meta'][701] = ['_name' => 'Cut', '_email' => 'cut@client.test', '_message' => 'Need 5 ton crane', '_screen_started' => '1'];
+achord_inquiry_screen_saved(701);
+check(count($GLOBALS['mails']) === 1 && ($GLOBALS['meta'][701]['_screen_verdict'] ?? '') === 'unfinished', '后台判断中途断开的询盘：兜底按普通询盘补发');
+achord_inquiry_screen_saved(701);
 check(count($GLOBALS['mails']) === 1, '兜底只补发一次');
 // 判定已写下、但拦截动作没做完就断开：兜底按判定把事做完（标无效、钉钉拦截、不发邮件）。
 $GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
 $GLOBALS['meta'][702] = ['_name' => 'Spam', '_email' => 's@scam.test', '_screen_verdict' => 'spam', '_screen_reason' => '群发骗局', '_screened_by' => 'AI（m1）'];
-achord_inquiry_handle_unscreened(702);
+achord_inquiry_screen_saved(702);
 check(!$GLOBALS['mails'] && count($GLOBALS['dingtalk']) === 1 && str_contains((string) ($GLOBALS['meta'][702]['_invalid'] ?? ''), '群发骗局') && ($GLOBALS['meta'][702]['_screen_done'] ?? '') === '1', '判定后断开：兜底照判定拦截');
 $ip_values = array_column(array_filter($GLOBALS['dingtalk'][0][0]['meta'], fn($m) => $m['label'] === 'IP 地址'), 'value');
 check($ip_values === [] && achord_inquiry_client_ip() === $_SERVER['REMOTE_ADDR'], '兜底（定时任务）不把服务器自己的 IP 当成提交人 IP；结束后恢复');
 $GLOBALS['dingtalk'] = [];
 $GLOBALS['meta'][707] = ['_name' => 'Spam2', '_email' => 's2@scam.test', '_ip' => '198.51.100.7', '_screen_verdict' => 'spam', '_screen_reason' => 'x'];
-achord_inquiry_handle_unscreened(707);
+achord_inquiry_screen_saved(707);
 check(str_starts_with((string) (array_column(array_filter($GLOBALS['dingtalk'][0][0]['meta'], fn($m) => $m['label'] === 'IP 地址'), 'value')[0] ?? ''), '198.51.100.7'), '兜底用询盘存下的提交人 IP');
 // 正常询盘判定写下、邮件没发就断开：兜底补发。
 $GLOBALS['meta'][703] = ['_name' => 'Ok', '_email' => 'ok@client.test', '_message' => 'Need 5 ton crane', '_screen_verdict' => 'ok', '_screen_stars' => '4'];
-achord_inquiry_handle_unscreened(703);
+achord_inquiry_screen_saved(703);
 check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【★★★★☆】'), '判定后断开：兜底补发带星邮件');
 $GLOBALS['mails'] = [];
 $GLOBALS['meta'][704] = ['_name' => 'Trashed', '_email' => 't@client.test'];
 $GLOBALS['post_status'][704] = 'trash';
-achord_inquiry_handle_unscreened(704);
+achord_inquiry_screen_saved(704);
 $GLOBALS['meta'][705] = ['_name' => 'Marked', '_email' => 'm@client.test', '_invalid' => '后台人工标记'];
-achord_inquiry_handle_unscreened(705);
+achord_inquiry_screen_saved(705);
 $GLOBALS['meta'][706] = ['_name' => 'Other', '_email' => 'o@client.test'];
 $GLOBALS['post_type'][706] = 'post';
-achord_inquiry_handle_unscreened(706);
+achord_inquiry_screen_saved(706);
 check(!$GLOBALS['mails'], '兜底不补发：已进回收站、已被人工标无效、不是询盘');
 // 判成疑似、自动标了无效但邮件没发就断开：自动标记不算人工决定，兜底照发带【疑似垃圾】的邮件。
 $GLOBALS['meta'][708] = ['_name' => 'Sus', '_email' => 'sus@client.test', '_message' => 'x', '_screen_verdict' => 'suspect', '_screen_reason' => '机房 IP', '_invalid' => '自动判定疑似垃圾：机房 IP', '_invalid_auto' => '1'];
-achord_inquiry_handle_unscreened(708);
+achord_inquiry_screen_saved(708);
 check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【疑似垃圾】') && ($GLOBALS['meta'][708]['_screen_done'] ?? '') === '1', '自动标的疑似：兜底照发通知');
 // 自动标记后管理员又手动标无效：算人工决定，兜底不发。
 $GLOBALS['mails'] = [];
 $GLOBALS['meta'][710] = ['_name' => 'Sus2', '_email' => 'sus2@client.test', '_screen_verdict' => 'suspect', '_screen_reason' => 'x', '_invalid' => 'x', '_invalid_auto' => '1'];
 achord_inquiry_set_invalid(710, '与产品无关');
-achord_inquiry_handle_unscreened(710);
+achord_inquiry_screen_saved(710);
 check(!$GLOBALS['mails'] && !isset($GLOBALS['meta'][710]['_invalid_auto']), '人工改标无效后兜底不发');
 // 判成垃圾、断开后管理员先「恢复有效」：补发邮件一次，兜底不再标回无效、不再发拦截钉钉。
 $GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
 $GLOBALS['meta'][709] = ['_name' => 'Real', '_email' => 'real@client.test', '_message' => 'x', '_screen_verdict' => 'spam', '_screen_reason' => 'x', '_invalid' => '已拦截：x', '_invalid_auto' => '1'];
 $GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([709])] = 1;
 achord_inquiry_set_invalid(709, '');
-achord_inquiry_handle_unscreened(709);
+achord_inquiry_screen_saved(709);
 check(count($GLOBALS['mails']) === 1 && !$GLOBALS['dingtalk'] && ($GLOBALS['meta'][709]['_invalid'] ?? '') === '' && !isset($GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([709])]), '恢复有效后兜底不再标回无效');
 // 提交请求还在等 AI 时管理员已处理：判定出来后不再覆盖人工决定、不再发通知。
 $GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
@@ -519,9 +528,34 @@ $GLOBALS['wpdb']->locks['_achord_inquiry_lock_715'] = time() + 300;
 $GLOBALS['filters']['achord_inquiry_lock_wait'] = fn() => 0.0;
 check(achord_inquiry_set_invalid(715, '') === false && $GLOBALS['meta'][715]['_invalid'] === 'x' && !$GLOBALS['mails'], '锁被占：恢复有效不执行，提示稍后再试');
 check(achord_inquiry_finish_screened(715, ['screen_verdict' => 'ok', 'name' => 'Busy', 'email' => 'busy@client.test']) === null && !$GLOBALS['mails'], '锁被占：收尾不动');
-achord_inquiry_handle_unscreened(715);
+achord_inquiry_screen_saved(715);
 check(!$GLOBALS['mails'] && isset($GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([715])]), '锁被占：兜底一分钟后再试');
 unset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_715'], $GLOBALS['filters']['achord_inquiry_lock_wait']);
+// 访客不等判断：保存后立刻答复，邮件、钉钉、AI 都还没跑；后台跑完后才发通知，并删掉临时存的 IP。
+$GLOBALS['mails'] = []; $GLOBALS['ai_requests'] = []; $GLOBALS['scheduled'] = [];
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'stars' => 4, 'summary' => 's']);
+$_POST = ['name' => 'Fast', 'email' => 'fast@client.test', 'message' => 'Need a 5 ton knuckle boom crane', 'boblift_inquiry_response' => 'json', 'boblift_inquiry_nonce' => 'good-boblift_submit_inquiry'];
+$_SERVER['REMOTE_ADDR'] = '192.0.2.120';
+try { achord_inquiry_handle(); $fast = null; } catch (JsonExit $e) { $fast = $e; }
+$fid = (int) ($fast->data['id'] ?? 0);
+check($fast && $fast->success && $fid > 0 && !$GLOBALS['mails'] && !$GLOBALS['ai_requests'] && isset($GLOBALS['scheduled']['achord_inquiry_screen_now' . json_encode([$fid])]), '提交立刻返回成功，AI 和通知交给后台');
+check(($GLOBALS['meta'][$fid]['_screen_ip'] ?? '') === '192.0.2.120', '后台判断用的提交人 IP 先临时存着');
+$_SERVER['REMOTE_ADDR'] = '10.0.0.1';
+achord_inquiry_screen_saved($fid);
+check(count($GLOBALS['mails']) === 1 && str_contains($GLOBALS['mails'][0]['body'], '192.0.2.120') && !isset($GLOBALS['meta'][$fid]['_screen_ip']) && count($GLOBALS['ai_requests']) === 1, '后台判断完才发邮件，用提交人 IP，之后删掉临时 IP');
+$_SERVER['REMOTE_ADDR'] = '192.0.2.10';
+// 测试连接按钮：没填全时说清楚；填了就跑两条样例并给出耗时。
+$saved_options = $GLOBALS['options'][ACHORD_INQUIRY_OPTION] ?? null;
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = ['ai_base_url' => '', 'ai_api_key' => '', 'ai_model' => ''] + (array) $saved_options;
+$t = achord_inquiry_ai_test();
+check(count($t) === 2 && $t[0]['answer'] === null && str_contains($t[0]['error'], '没填全'), '测试连接：没填全时提示');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = $saved_options;
+$GLOBALS['ai_reply'] = ['code' => 401, 'body' => '{"error":"invalid key"}'];
+$t = achord_inquiry_ai_test();
+check(str_contains($t[0]['error'], 'HTTP 401') && str_contains($t[0]['error'], 'invalid key'), '测试连接：接口报错原样显示');
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'stars' => 5, 'summary' => 'ok']);
+$t = achord_inquiry_ai_test();
+check($t[0]['answer']['stars'] === 5 && is_float($t[0]['seconds']), '测试连接：显示判断结果和耗时');
 $GLOBALS['gets'] = [];
 $short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
 check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');

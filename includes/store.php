@@ -208,7 +208,7 @@ function achord_inquiry_set_invalid_locked(int $post_id, string $reason, bool $a
         if (($verdict === 'spam' || $unfinished) && get_post_meta($post_id, '_mail_sent', true) === '') {
             // Sent from the administrator's request: the sender's saved IP (or none) stands in for theirs.
             $record = achord_inquiry_record($post_id);
-            achord_inquiry_ip_override((string) ($record['ip'] ?? ''));
+            achord_inquiry_ip_override((string) ($record['screen_ip'] ?? '') !== '' ? (string) $record['screen_ip'] : (string) ($record['ip'] ?? ''));
             try {
                 achord_inquiry_send_mail(array_diff_key($record, ['invalid' => 1, 'screen_verdict' => 1, 'screen_reason' => 1]), $post_id);
             } finally {
@@ -218,7 +218,9 @@ function achord_inquiry_set_invalid_locked(int $post_id, string $reason, bool $a
         // The administrator has decided: the safety net must not mark it invalid again.
         if (get_post_meta($post_id, '_blocked', true) === '') {
             update_post_meta($post_id, '_screen_done', '1');
+            delete_post_meta($post_id, '_screen_ip');
             wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
+            wp_clear_scheduled_hook('achord_inquiry_screen_now', [$post_id]);
         }
         return;
     }
