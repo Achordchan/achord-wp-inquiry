@@ -324,6 +324,10 @@ $real = [
 foreach ($real as $who => $text) {
     check(achord_inquiry_suspect_reason(['message' => $text], '192.0.2.10') === '', "真客户不误判：{$who}");
 }
+$GLOBALS['transients']['achord_inquiry_org_' . md5('190.2.151.135')] = 'AS49981 WorldStream B.V.';
+foreach ($real as $who => $text) {
+    check(achord_inquiry_suspect_reason(['message' => $text], '190.2.151.135') === '', "真客户走 VPN 也不误判：{$who}");
+}
 check(achord_inquiry_scam_phrases('Are you the right person? Please send the price list.') === ['price list', 'right person'], '同一句话不重复算');
 // 机房/VPN 网络：留言没提设备才算，提了设备不算。
 $GLOBALS['transients']['achord_inquiry_org_' . md5('190.2.151.135')] = 'AS49981 WorldStream B.V.';

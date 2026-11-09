@@ -177,7 +177,7 @@ const ACHORD_INQUIRY_SCAM_PHRASES = [
 ];
 
 /** Words a buyer of lifting equipment uses about the machine itself (any of them clears the template check). */
-const ACHORD_INQUIRY_PRODUCT_WORDS = '/(\bcranes?\b|\btons?\b|\btonnes?\b|\d\s*t\b|\bkg\b|\bbooms?\b|\bwinch|\bjib\b|\bknuckle|\btelescopic|\bmarine\b|\bforklift|\boutriggers?\b|\bchassis\b|\breach\b|\bheight\b|\bmet(er|re)s?\b|\d\s*m\b|\bcapacity\b|\bloader\b|\bdumper|\bskid\b|\bsq\s?\d)/i';
+const ACHORD_INQUIRY_PRODUCT_WORDS = '/(\bcranes?\b|\bgr[uú]as?\b|\bgrues?\b|кран|吊|\btons?\b|\btonnes?\b|\btoneladas?\b|тонн|吨|\d\s*(t|т|тн)(?![\p{L}])|\bkg\b|кг|\bbooms?\b|\bplumas?\b|стрел|\bwinch|\bjib\b|\bknuckle|\btelescopic|\bmarine\b|\bforklift|\boutriggers?\b|\bchassis\b|\breach\b|\bheight\b|\bmet(er|re|ro)s?\b|метр|\d\s*m(?![\p{L}])|\bcapacity\b|\bloader\b|\bdumper|\bskid\b|\b(tail\s*)?lifts?\b|\bsq\s?\d)/iu';
 
 /** Network owners whose addresses are servers or VPN exits, not homes, offices or phones (matched in ipinfo's org). */
 const ACHORD_INQUIRY_HOSTING_ORGS = [
