@@ -80,7 +80,8 @@ function achord_inquiry_domain_facts(string $domain): array
     if (is_array($cached)) {
         return $cached;
     }
-    $page = wp_remote_get('https://' . $domain . '/', ['timeout' => 4, 'redirection' => 3, 'limit_response_size' => 200000]);
+    // wp_safe_remote_get(): the domain is the visitor's to choose, so the address and every redirect must be public.
+    $page = wp_safe_remote_get('https://' . $domain . '/', ['timeout' => 4, 'redirection' => 3, 'limit_response_size' => 200000]);
     if (!is_wp_error($page)) {
         $code = (int) wp_remote_retrieve_response_code($page);
         if (preg_match('#<title[^>]*>(.*?)</title>#is', (string) wp_remote_retrieve_body($page), $match)) {
@@ -89,7 +90,7 @@ function achord_inquiry_domain_facts(string $domain): array
         $facts['website'] = $facts['website'] !== '' ? $facts['website'] : ($code > 0 ? '有网站但没有标题（HTTP ' . $code . '）' : '');
     }
     $facts['website'] = $facts['website'] !== '' ? $facts['website'] : '打不开';
-    $rdap = wp_remote_get('https://rdap.org/domain/' . rawurlencode($domain), ['timeout' => 4, 'redirection' => 3]);
+    $rdap = wp_safe_remote_get('https://rdap.org/domain/' . rawurlencode($domain), ['timeout' => 4, 'redirection' => 3]);
     if (!is_wp_error($rdap) && (int) wp_remote_retrieve_response_code($rdap) === 200) {
         $data = json_decode((string) wp_remote_retrieve_body($rdap), true);
         foreach ((array) ($data['events'] ?? []) as $event) {
@@ -190,10 +191,12 @@ function achord_inquiry_ai_assess(array $fields, array $facts): ?array
         $text = $match[0];
     }
     $answer = json_decode($text, true);
-    if (!is_array($answer) || !array_key_exists('spam', $answer)) {
+    // Only an explicit yes or no counts; anything else (null, "maybe") is no answer, and the rules decide.
+    $raw = is_array($answer) ? ($answer['spam'] ?? null) : null;
+    if (!is_bool($raw) && !in_array($raw, ['true', 'false'], true)) {
         return null;
     }
-    $spam = $answer['spam'] === true || $answer['spam'] === 'true';
+    $spam = $raw === true || $raw === 'true';
     $stars = $spam ? 0 : max(1, min(5, (int) ($answer['stars'] ?? 3)));
     $clean = static fn($value, int $length): string => mb_substr(trim(sanitize_text_field(is_scalar($value) ? (string) $value : '')), 0, $length);
     return [

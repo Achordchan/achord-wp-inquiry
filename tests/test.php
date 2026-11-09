@@ -71,6 +71,7 @@ function current_time($f) { return gmdate($f, 1767225600); }
 function get_transient($k) { return $GLOBALS['transients'][$k] ?? false; }
 function set_transient($k, $v, $t = 0) { $GLOBALS['transients'][$k] = $v; return true; }
 function wp_remote_get($u, $a = []) { $GLOBALS['gets'][] = $u; return ['code' => 200, 'body' => 'CA']; }
+function wp_safe_remote_get($u, $a = []) { $GLOBALS['safe_gets'][] = $u; return wp_remote_get($u, $a); }
 function wp_remote_post($u, $a = []) {
     if (str_contains($u, '/chat/completions')) {
         $GLOBALS['ai_requests'][] = ['url' => $u, 'args' => $a];
@@ -414,6 +415,13 @@ $fid = count($GLOBALS['inserted']) + 100;
 check($r->data['id'] === 0 && str_starts_with($GLOBALS['mails'][0]['subject'] ?? '', '【疑似垃圾】') && str_contains((string) ($GLOBALS['meta'][$fid]['_screened_by'] ?? ''), 'AI 没有按时回答'), 'AI 超时：退回规则，照发邮件但标疑似');
 $GLOBALS['ai_reply'] = ['code' => 200, 'body' => '{"choices":[{"message":{"content":"I cannot help"}}]}'];
 check(achord_inquiry_screen(['message' => $real['Clinton']], '192.0.2.84')['verdict'] === 'ok', 'AI 答非所问：退回规则');
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => null, 'stars' => 5]);
+check(achord_inquiry_ai_assess(['message' => 'x'], []) === null && achord_inquiry_screen(['message' => $spam['Yaron']], '192.0.2.85')['verdict'] === 'suspect', 'AI 的 spam 不是明确是/否：当没回答，规则照判');
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => 'false', 'stars' => 2, 'summary' => 's']);
+check(achord_inquiry_ai_assess(['message' => 'x'], [])['spam'] === false, 'spam 写成字符串 "false" 也认');
+$GLOBALS['safe_gets'] = [];
+achord_inquiry_domain_facts('safe-check.test');
+check(count($GLOBALS['safe_gets']) === 2, '查客户域名官网和 RDAP 都走 wp_safe_remote_get（防 SSRF）');
 check(achord_inquiry_sanitize_options(['ai_base_url' => 'http://insecure.test'])['ai_base_url'] === '', 'Base URL 只认 https');
 check(achord_inquiry_sanitize_options(['ai_timeout' => '999'])['ai_timeout'] === '60', '超时最多 60 秒');
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['ai_api_key'] = '';
