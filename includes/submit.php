@@ -207,6 +207,13 @@ function achord_inquiry_handle(): void
  */
 function achord_inquiry_finish_screened(int $post_id, array $fields): int
 {
+    // An administrator may have marked or restored it while the AI was still thinking (or before the safety net ran):
+    // restoring finishes the screening (_screen_done), a manual invalid mark has no _invalid_auto. Their call stands.
+    if (achord_inquiry_manually_decided($post_id)) {
+        update_post_meta($post_id, '_screen_done', '1');
+        wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
+        return 0;
+    }
     $verdict = (string) ($fields['screen_verdict'] ?? '');
     $reason = (string) ($fields['screen_reason'] ?? '');
     $by = (string) ($fields['screened_by'] ?? '');
@@ -229,6 +236,15 @@ function achord_inquiry_finish_screened(int $post_id, array $fields): int
     return in_array($verdict, ['spam', 'suspect'], true) ? 0 : $post_id;
 }
 
+/** Marked invalid by an administrator (not the screening's own _invalid_auto mark), or already finished/restored. */
+function achord_inquiry_manually_decided(int $post_id): bool
+{
+    if (get_post_meta($post_id, '_screen_done', true) === '1') {
+        return true;
+    }
+    return get_post_meta($post_id, '_invalid', true) !== '' && get_post_meta($post_id, '_invalid_auto', true) !== '1';
+}
+
 /**
  * The safety net: an inquiry whose request was cut off before its screening finished (waiting for the AI, or after the
  * verdict but before its actions) is finished here, once.
@@ -244,9 +260,9 @@ function achord_inquiry_handle_unscreened($post_id): void
     if ($status === false || $status === 'trash' || get_post_type($post_id) !== achord_inquiry_post_type()) {
         return;
     }
-    // An administrator marked it invalid meanwhile: their call stands, nothing is sent. The screening's own mark
-    // (_invalid_auto, spam or suspect cut off before its notice) is finished below instead.
-    if (get_post_meta($post_id, '_invalid', true) !== '' && get_post_meta($post_id, '_invalid_auto', true) !== '1') {
+    // An administrator marked it invalid meanwhile: their call stands, nothing is sent (achord_inquiry_finish_screened()
+    // checks it again). The screening's own mark (_invalid_auto, spam or suspect cut off before its notice) is finished.
+    if (achord_inquiry_manually_decided($post_id)) {
         update_post_meta($post_id, '_screen_done', '1');
         return;
     }

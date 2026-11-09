@@ -476,6 +476,13 @@ $GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([709])] = 1;
 achord_inquiry_set_invalid(709, '');
 achord_inquiry_handle_unscreened(709);
 check(count($GLOBALS['mails']) === 1 && !$GLOBALS['dingtalk'] && ($GLOBALS['meta'][709]['_invalid'] ?? '') === '' && !isset($GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([709])]), '恢复有效后兜底不再标回无效');
+// 提交请求还在等 AI 时管理员已处理：判定出来后不再覆盖人工决定、不再发通知。
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
+$GLOBALS['meta'][711] = ['_name' => 'M', '_email' => 'm@client.test', '_invalid' => '后台人工标记'];
+$a = achord_inquiry_finish_screened(711, ['name' => 'M', 'email' => 'm@client.test', 'screen_verdict' => 'ok']);
+$GLOBALS['meta'][712] = ['_name' => 'R', '_email' => 'r@client.test', '_screen_done' => '1'];
+$b = achord_inquiry_finish_screened(712, ['name' => 'R', 'email' => 'r@client.test', 'screen_verdict' => 'spam', 'screen_reason' => 'x']);
+check($a === 0 && $b === 0 && !$GLOBALS['mails'] && !$GLOBALS['dingtalk'] && $GLOBALS['meta'][711]['_invalid'] === '后台人工标记' && ($GLOBALS['meta'][712]['_invalid'] ?? '') === '', '等 AI 期间人工标记/恢复：判定不覆盖、不发通知');
 $GLOBALS['gets'] = [];
 $short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
 check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');
