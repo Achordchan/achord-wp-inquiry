@@ -86,7 +86,7 @@ function achord_inquiry_settings_page(): void
     echo '<p><input class="regular-text" type="password" autocomplete="new-password" name="' . $name('ai_api_key') . '" value="' . esc_attr($options['ai_api_key']) . '" placeholder="API Key"></p>';
     echo '<p><input class="small-text" type="number" min="5" max="60" name="' . $name('ai_timeout') . '" value="' . esc_attr($options['ai_timeout']) . '"> 秒内没答复就改用规则（默认 30 秒）。访客不用等：询盘存好就显示提交成功，判断在后台跑，只是邮件和钉钉晚这么几十秒到；后台中途断开也不会丢，3 分钟后补发。</p>';
     echo '<p><input class="regular-text" type="text" name="' . $name('ai_model') . '" value="' . esc_attr($options['ai_model']) . '" placeholder="模型，例如 gpt-4o-mini"></p>';
-    echo '<p class="description">三项都填（OpenAI 兼容的 /chat/completions 接口，只认 https）才启用。每条询盘先由服务器查 IP 归属、邮箱域名官网和注册日期、来源渠道，再交给 AI 判断：垃圾询盘不发邮件、钉钉只推「拦截一条垃圾询盘，原因 …」、标无效、不算转化（误判点「恢复有效」会补发邮件）；正常询盘在邮件和钉钉里带 1–5 星优质度和一句背调。AI 出错或超时时改用上面的规则。不填就不调用 AI。填好保存后用下面的「测试连接」检查。</p></td></tr>';
+    echo '<p class="description">三项都填（OpenAI 兼容的 /chat/completions 接口，只认 https）才启用。每条询盘先由服务器查 IP 归属、邮箱域名官网和注册日期、来源渠道，再交给 AI 判断：垃圾询盘钉钉只推「拦截一条垃圾询盘，原因 …」，邮件照发但标题加【AI 拦截】、正文写明原因，标无效、不算转化（误判点「恢复有效」）；正常询盘在邮件和钉钉里带 1–5 星优质度和一句背调。AI 出错或超时时改用上面的规则。不填就不调用 AI。填好保存后用下面的「测试连接」检查。</p></td></tr>';
 
     echo '<tr><th scope="row">保存 IP</th><td>';
     $checkbox('store_ip', '询盘保存访客 IP');

@@ -163,7 +163,11 @@ function achord_inquiry_admin_mail(array $fields, int $post_id): array
     // The screening's verdict: stars and background note, or why it looks like spam.
     $screen_block = '';
     $screen_stars = (int) ($fields['screen_stars'] ?? 0);
-    if (($fields['suspect'] ?? '') !== '' || ($fields['screen_verdict'] ?? '') === 'spam') {
+    if (($fields['suspect'] ?? '') === '' && ($fields['screen_verdict'] ?? '') === 'spam') {
+        // Blocked by the AI: the email still goes out (the original stays in the mailbox), marked; DingTalk only had the notice.
+        $screen_text = '🚫 AI 已拦截（判为垃圾询盘）：' . (string) ($fields['screen_reason'] ?? '') . '。钉钉只推了拦截提示，已标无效、不计转化；是真客户请在后台点「恢复有效」。';
+        $screen_block = '<tr><td style="padding:16px 36px 0;"><div style="padding:12px 16px;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;font-size:14px;line-height:1.6;color:#991b1b;">' . esc_html($screen_text) . ' <span style="font-size:12px;color:#94a3b8;">' . esc_html((string) ($fields['screened_by'] ?? '')) . '</span></div></td></tr>';
+    } elseif (($fields['suspect'] ?? '') !== '') {
         $screen_text = '⚠️ 疑似垃圾：' . (string) (($fields['suspect'] ?? '') !== '' ? $fields['suspect'] : ($fields['screen_reason'] ?? '')) . '。已标无效、不计转化；是真客户请在后台点「恢复有效」。';
         $screen_block = '<tr><td style="padding:16px 36px 0;"><div style="padding:12px 16px;background:#fff7ed;border:1px solid #fed7aa;border-radius:4px;font-size:14px;line-height:1.6;color:#9a3412;">' . esc_html($screen_text) . '</div></td></tr>';
     } elseif ($screen_stars > 0 || trim((string) ($fields['screen_summary'] ?? '')) !== '') {
@@ -190,7 +194,9 @@ function achord_inquiry_admin_mail(array $fields, int $post_id): array
         . '</td></tr></table></body></html>';
 
     $subject = (string) apply_filters('achord_inquiry_mail_subject', $type['subject'] . $email, $fields);
-    if (($fields['suspect'] ?? '') !== '') {
+    if (($fields['suspect'] ?? '') === '' && ($fields['screen_verdict'] ?? '') === 'spam') {
+        $subject = '【AI 拦截】' . $subject;
+    } elseif (($fields['suspect'] ?? '') !== '') {
         $subject = '【疑似垃圾】' . $subject;
     } elseif ((int) ($fields['screen_stars'] ?? 0) > 0) {
         $subject = '【' . achord_inquiry_stars_text((int) $fields['screen_stars']) . '】' . $subject;
