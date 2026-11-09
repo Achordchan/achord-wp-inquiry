@@ -180,6 +180,9 @@ function achord_inquiry_admin_mail(array $fields, int $post_id): array
         . '</td></tr></table></body></html>';
 
     $subject = (string) apply_filters('achord_inquiry_mail_subject', $type['subject'] . $email, $fields);
+    if (($fields['suspect'] ?? '') !== '') {
+        $subject = '【疑似垃圾】' . $subject;
+    }
     return [$subject, $body];
 }
 
@@ -256,6 +259,10 @@ function achord_inquiry_dingtalk_message(int $post_id, array $fields): array
         $links[] = ['label' => '📋 后台查看', 'url' => admin_url('post.php?post=' . $post_id . '&action=edit')];
     }
     $title = $type['dingtalk_title'] !== '' ? $type['dingtalk_title'] : $config['dingtalk_emoji'] . ' ' . $config['site_label'] . '新询盘';
+    if (($fields['suspect'] ?? '') !== '') {
+        $title = '【疑似垃圾】' . $title;
+        array_unshift($meta, ['label' => '疑似垃圾', 'icon' => '⚠️', 'value' => (string) $fields['suspect'] . '。已标无效、不计转化；是真客户请在后台点「恢复有效」']);
+    }
     return [
         'title' => $title,
         'headline' => trim((string) ($fields['product'] ?? '')),

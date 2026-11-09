@@ -75,6 +75,7 @@ function achord_inquiry_options(): array
         'turnstile_secret_key' => '',
         'blocklist' => '',
         'store_ip' => '0',
+        'suspect_check' => '1',
     ];
     $defaults = array_merge($defaults, array_intersect_key((array) apply_filters('achord_inquiry_default_options', $defaults), $defaults));
     $saved = get_option(ACHORD_INQUIRY_OPTION, null);

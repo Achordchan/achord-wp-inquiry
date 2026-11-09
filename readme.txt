@@ -3,12 +3,16 @@ Contributors: achord
 Requires at least: 6.2
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 0.2.1
+Stable tag: 0.3.0
 License: GPLv2 or later
 
 网站询盘的后台：接收、防垃圾、来源渠道、存储、通知邮件、钉钉。表单外观由主题负责。
 
 == Changelog ==
+
+= 0.3.0 =
+* 自动标记疑似垃圾询盘（询盘设置里可关，默认开）：留言里有两句以上群发骗局套话（索要目录/价目表、「你是负责人吗」、约 Zoom/Teams 会议、MOQ 等）且没提设备本身，或从机房/VPN 网络提交且没提设备的，照常存下、照发邮件和钉钉，但标题前加【疑似垃圾】、自动标为无效（原因写明）、不给 ?sent= 感谢页，所以不算 GA4 generate_lead 和广告转化。真客户在列表点「恢复有效」。
+* 网络归属查 ipinfo.io/<ip>/org，按 IP 缓存一周。
 
 = 0.2.1 =
 * 只写无效标记的校验改为对照文章接口自己的可写字段清单：WordPress.com 连接器经代理转发时带的额外参数不再被误拒；被拒时错误信息列出是哪些字段。
