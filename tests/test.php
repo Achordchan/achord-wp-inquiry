@@ -302,5 +302,53 @@ check($refused(['meta' => ['boblift_inquiry_invalid' => 'spam']], [], ['title' =
 check($refused([], [], ['meta' => ['jetpack_seo_noindex' => true]]) === ['meta.boblift_inquiry_invalid (missing)', 'meta.jetpack_seo_noindex'], '网址参数里塞别的 meta 的拒绝');
 check($refused(['meta' => ['boblift_inquiry_invalid' => 'spam']], ['_wpnonce' => 'abc'], ['context' => 'edit', '_fields' => 'id,meta', 'http_envelope' => '1']) === [], '不写入的参数（context、_fields、_wpnonce、代理自带参数）照样放行');
 
+
+// 疑似垃圾：2026-11 起重机站真实询盘原文（垃圾 4 条、真客户 6 条）。
+$spam = [
+    'Duarte' => "Hello\r\nWe are interested in your products and would like to explore a potential business partnership.\r\nPlease send us your latest product catalogue, company profile, price list, MOQ, and Lead time.\r\nMoreso, when would you be available for a Zoom,Teams or Google virtual Meeting so our IT Department can schedule for the online meeting to discuss further on our order specifications.",
+    'Bill' => "Dear sir/madam,\r\nI hope this email finds you well.\r\nI am writing to express our strong interest in the Company's product.\r\nAre you the right person to discuss our needs with or Could you please redirect me to the appropriate sales representative to discuss more about our needs.",
+    'Yaron' => "Good day,\r\nPlease be informed that we are interested in placing orders for some of your products.\r\nKindly provide your latest updated catalog and price list for our perusal to enable us to proceed with the order without delay.",
+    'Khalifa' => "Hello Dear,\r\nThis is Khalifa Habib Purchase Manager at Boodai Trading Co. Ltd,\r\nWe wish to place an order on your products,\r\nPlease revert back with your updated catalogs and price list for our view and selections.",
+];
+foreach ($spam as $who => $text) {
+    check(achord_inquiry_suspect_reason(['message' => $text], '192.0.2.10') !== '', "疑似垃圾：{$who} 的模板话术");
+}
+$real = [
+    'Julian' => '6 metros',
+    'Hamrajh' => "10 tons. we have a hino 500 chassis \r\nCrane must have winch and remote control",
+    'Clinton' => "Hi \r\nWe are looking to have 2 tail lifts fitted to JAC X200 1 x Jhb 1 x Cpt\r\nCould you please send us your best offer.",
+    'Rasil' => 'До 1т',
+    'Artur' => 'Hello! We have purchased a QQZ-50 (SQ3.2 ZA3) crane-manipulator. Please could you provide us with the operating and maintenance manual?',
+    'Catalogue buyer' => 'Please send your catalogue and price list for a 5 ton knuckle boom crane.',
+];
+foreach ($real as $who => $text) {
+    check(achord_inquiry_suspect_reason(['message' => $text], '192.0.2.10') === '', "真客户不误判：{$who}");
+}
+check(achord_inquiry_scam_phrases('Are you the right person? Please send the price list.') === ['price list', 'right person'], '同一句话不重复算');
+// 机房/VPN 网络：留言没提设备才算，提了设备不算。
+$GLOBALS['transients']['achord_inquiry_org_' . md5('190.2.151.135')] = 'AS49981 WorldStream B.V.';
+$GLOBALS['transients']['achord_inquiry_org_' . md5('179.19.132.98')] = 'AS271773 PARTNERS TELECOM COLOMBIA SAS';
+check(str_contains(achord_inquiry_suspect_reason(['message' => 'We need your offer.'], '190.2.151.135'), 'WorldStream'), '机房 IP + 没提设备：疑似');
+check(achord_inquiry_suspect_reason(['message' => 'Need a 3 ton crane'], '190.2.151.135') === '', '机房 IP 但写了设备：不算');
+check(achord_inquiry_suspect_reason(['message' => 'We need your offer.'], '179.19.132.98') === '', '家用/手机网络：不算');
+
+// 疑似垃圾整个流程：存下、发邮件钉钉带【疑似垃圾】、标无效、不给 ?sent=。
+$_SERVER['REMOTE_ADDR'] = '192.0.2.77'; // 前面的提交已用完 192.0.2.10 的限流名额
+$GLOBALS['mails'] = [];
+$GLOBALS['dingtalk'] = [];
+$r = submit(['name' => 'Yaron', 'email' => 'yaron@scam.test', 'message' => $spam['Yaron']]);
+$id = $r->data['id'] ?? -1;
+$last = end($GLOBALS['inserted']);
+check($r->success && $id === 0 && !str_contains($r->data['redirect'], 'sent='), '疑似垃圾：感谢页不带编号，不计转化');
+check($last['post_status'] === 'publish' && !str_starts_with($last['post_title'], '[已拦截]'), '疑似垃圾：照常存成询盘');
+$saved_id = count($GLOBALS['inserted']) + 100;
+check(str_starts_with((string) ($GLOBALS['meta'][$saved_id]['_invalid'] ?? ''), '自动判定疑似垃圾：群发模板话术'), '疑似垃圾：自动标为无效并写明原因');
+check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【疑似垃圾】'), '疑似垃圾：邮件照发，标题带【疑似垃圾】');
+check(!$GLOBALS['dingtalk'] || str_starts_with($GLOBALS['dingtalk'][0][0]['title'], '【疑似垃圾】'), '疑似垃圾：钉钉标题带【疑似垃圾】');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['suspect_check'] = '0';
+$r = submit(['name' => 'Yaron', 'email' => 'yaron@scam.test', 'message' => $spam['Yaron']]);
+check($r->success && $r->data['id'] > 0, '关掉自动标记：照旧算正常询盘');
+unset($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['suspect_check']);
+
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);

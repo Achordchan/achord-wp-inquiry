@@ -175,6 +175,12 @@ function achord_inquiry_handle(): void
     if ($block_reason !== '') {
         achord_inquiry_succeed(0);
     }
+    // Suspected spam (guard.php) still reaches sales, flagged, but is marked invalid and never counted as a conversion.
+    $suspect = achord_inquiry_suspect_check_enabled() ? achord_inquiry_suspect_reason($fields, achord_inquiry_client_ip()) : '';
+    if ($suspect !== '') {
+        achord_inquiry_set_invalid((int) $post_id, '自动判定疑似垃圾：' . $suspect);
+        $fields['suspect'] = $suspect;
+    }
     achord_inquiry_notify((int) $post_id, $fields);
-    achord_inquiry_succeed((int) $post_id);
+    achord_inquiry_succeed($suspect !== '' ? 0 : (int) $post_id);
 }

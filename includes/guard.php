@@ -151,3 +151,115 @@ function achord_inquiry_saved_block_reason(string $reason): string
 {
     return !achord_inquiry_store_ip() && str_starts_with($reason, 'IP ') ? 'IP 黑名单' : $reason;
 }
+
+/*
+ * Suspected spam: the people who get past Turnstile and the blocklist are humans typing one of a few mass templates
+ * ("please send your catalogue and price list", "are you the right person", "when can we meet on Zoom/Teams"), each time
+ * from a new address, often through a VPN or a rented server. Such an inquiry is still saved and still sent to sales,
+ * with 【疑似垃圾】 in front of the mail subject and the DingTalk title, but it is marked invalid with the reason and gets
+ * no ?sent= thank-you page, so it is not reported to GA4 or Google Ads. 恢复有效 in the list clears the mark.
+ */
+
+/** Phrases of the mass templates; two different ones in a message that names nothing about a product make it suspect. */
+const ACHORD_INQUIRY_SCAM_PHRASES = [
+    '/\bprice\s*-?lists?\b/i',
+    '/\bcatalog(ue)?s?\b/i',
+    '/\bMOQ\b/',
+    '/\bright person\b/i',
+    '/\b(appropriate|relevant|right) (sales|person|department|representative)/i',
+    '/\b(zoom|ms teams|microsoft teams|teams|google meet|skype|virtual meeting|online meeting|video call)\b/i',
+    '/\b(place|placing) (an |our |a |some )?(orders?|purchase)\b/i',
+    '/\bbusiness (partnership|cooperation|relationship)\b/i',
+    '/\b(purchas(e|ing)|procurement|sourcing) (manager|officer|director|department)\b/i',
+    '/\bstrong interest\b/i',
+    '/\bcompany profile\b/i',
+    '/\bfor our (perusal|view|review) and selection/i',
+];
+
+/** Words a buyer of lifting equipment uses about the machine itself (any of them clears the template check). */
+const ACHORD_INQUIRY_PRODUCT_WORDS = '/(\bcranes?\b|\btons?\b|\btonnes?\b|\d\s*t\b|\bkg\b|\bbooms?\b|\bwinch|\bjib\b|\bknuckle|\btelescopic|\bmarine\b|\bforklift|\boutriggers?\b|\bchassis\b|\breach\b|\bheight\b|\bmet(er|re)s?\b|\d\s*m\b|\bcapacity\b|\bloader\b|\bdumper|\bskid\b|\bsq\s?\d)/i';
+
+/** Network owners whose addresses are servers or VPN exits, not homes, offices or phones (matched in ipinfo's org). */
+const ACHORD_INQUIRY_HOSTING_ORGS = [
+    'hosting', 'hosted', 'datacenter', 'data center', 'datacamp', 'datapacket', 'worldstream', 'm247', 'vpn', 'digitalocean',
+    'ovh', 'hetzner', 'linode', 'akamai', 'vultr', 'choopa', 'contabo', 'leaseweb', 'amazon', 'google llc', 'microsoft',
+    'oracle', 'alibaba', 'tencent', 'private layer', 'packethub', 'clouvider', 'tzulo', 'cdn77', 'hostinger', 'ionos',
+    'colocrossing', 'quadranet', 'psychz', 'zenlayer', 'g-core', 'gcore', 'servers', 'cloudflare', 'performive',
+    'hostroyale', 'hydra communications', 'kamatera', 'scaleway', 'upcloud', 'ipxo', 'stark industries',
+];
+
+/** Whether the 自动标记疑似垃圾 setting is on (it is unless unticked in 询盘设置). */
+function achord_inquiry_suspect_check_enabled(): bool
+{
+    return (string) (achord_inquiry_options()['suspect_check'] ?? '1') === '1';
+}
+
+/** The distinct template phrases found in a message, as matched (e.g. ['price list', 'catalogue']). */
+function achord_inquiry_scam_phrases(string $message): array
+{
+    $found = [];
+    foreach (ACHORD_INQUIRY_SCAM_PHRASES as $pattern) {
+        if (preg_match($pattern, $message, $match)) {
+            $found[] = strtolower($match[0]);
+        }
+    }
+    return array_values(array_unique($found));
+}
+
+/** Whether the message says anything about the machine (a capacity, a boom, a crane …). */
+function achord_inquiry_mentions_product(string $message): bool
+{
+    return (bool) preg_match(ACHORD_INQUIRY_PRODUCT_WORDS, $message);
+}
+
+/** Who owns the IP's network per ipinfo.io (e.g. AS49981 WorldStream B.V.), cached for a week; '' when unknown. */
+function achord_inquiry_ip_org(string $ip): string
+{
+    if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+        return '';
+    }
+    $key = 'achord_inquiry_org_' . md5($ip);
+    $org = get_transient($key);
+    if ($org === false) {
+        $response = wp_remote_get('https://ipinfo.io/' . rawurlencode($ip) . '/org', ['timeout' => 3]);
+        $text = trim((string) wp_remote_retrieve_body($response));
+        $org = !is_wp_error($response) && (int) wp_remote_retrieve_response_code($response) === 200 && $text !== '' && strlen($text) < 200 && !str_starts_with($text, '{') ? $text : '';
+        set_transient($key, $org, $org !== '' ? WEEK_IN_SECONDS : HOUR_IN_SECONDS);
+    }
+    return (string) $org;
+}
+
+/** The network owner when it is a server or VPN provider, else ''. */
+function achord_inquiry_hosting_org(string $ip): string
+{
+    $org = achord_inquiry_ip_org($ip);
+    $lower = strtolower($org);
+    foreach (ACHORD_INQUIRY_HOSTING_ORGS as $word) {
+        if ($lower !== '' && str_contains($lower, $word)) {
+            return $org;
+        }
+    }
+    return '';
+}
+
+/**
+ * Why an inquiry looks like spam, or '' when it does not: two or more template phrases in a message that says nothing
+ * about the machine, or a server/VPN address with such a message.
+ */
+function achord_inquiry_suspect_reason(array $fields, string $ip): string
+{
+    $message = (string) ($fields['message'] ?? '');
+    if (achord_inquiry_mentions_product($message)) {
+        return '';
+    }
+    $reasons = [];
+    $phrases = achord_inquiry_scam_phrases($message);
+    if (count($phrases) >= 2) {
+        $reasons[] = '群发模板话术（' . implode('、', array_slice($phrases, 0, 4)) . '）';
+    }
+    $hosting = achord_inquiry_hosting_org($ip);
+    if ($hosting !== '') {
+        $reasons[] = '机房/VPN 网络（' . $hosting . '）';
+    }
+    return implode('；', $reasons);
+}
