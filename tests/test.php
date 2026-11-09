@@ -556,6 +556,15 @@ check(str_contains($t[0]['error'], 'HTTP 401') && str_contains($t[0]['error'], '
 $GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'stars' => 5, 'summary' => 'ok']);
 $t = achord_inquiry_ai_test();
 check($t[0]['answer']['stars'] === 5 && is_float($t[0]['seconds']), '测试连接：显示判断结果和耗时');
+// 临时 IP 不留：已完成或进了回收站的询盘，兜底触发时也删掉。
+$GLOBALS['meta'][716] = ['_name' => 'T', '_email' => 't@client.test', '_screen_ip' => '192.0.2.5'];
+$GLOBALS['post_status'][716] = 'trash';
+achord_inquiry_screen_saved(716);
+$GLOBALS['meta'][717] = ['_name' => 'D', '_email' => 'd@client.test', '_screen_ip' => '192.0.2.6', '_screen_done' => '1'];
+achord_inquiry_screen_saved(717);
+$GLOBALS['meta'][718] = ['_name' => 'M', '_email' => 'm@client.test', '_screen_ip' => '192.0.2.7', '_invalid' => '后台人工标记'];
+achord_inquiry_finish_screened(718, ['screen_verdict' => 'ok']);
+check(!isset($GLOBALS['meta'][716]['_screen_ip']) && !isset($GLOBALS['meta'][717]['_screen_ip']) && !isset($GLOBALS['meta'][718]['_screen_ip']), '回收站、已完成、人工处理过的询盘都删掉临时 IP');
 $GLOBALS['gets'] = [];
 $short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
 check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');

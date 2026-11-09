@@ -246,11 +246,16 @@ function achord_inquiry_respond_then_screen(int $post_id, int $answer): void
 function achord_inquiry_screen_saved($post_id): void
 {
     $post_id = (int) $post_id;
-    if ($post_id <= 0 || get_post_meta($post_id, '_screen_done', true) === '1') {
+    if ($post_id <= 0) {
         return;
     }
     $status = get_post_status($post_id);
-    if ($status === false || $status === 'trash' || get_post_type($post_id) !== achord_inquiry_post_type()) {
+    if ($status === false || get_post_type($post_id) !== achord_inquiry_post_type()) {
+        return;
+    }
+    // Finished or trashed: nothing to send, and the temporary IP goes.
+    if ($status === 'trash' || get_post_meta($post_id, '_screen_done', true) === '1') {
+        delete_post_meta($post_id, '_screen_ip');
         return;
     }
     if (achord_inquiry_manually_decided($post_id)) {
@@ -323,6 +328,7 @@ function achord_inquiry_finish_screened_locked(int $post_id, array $fields): int
     wp_cache_delete($post_id, 'post_meta');
     if (achord_inquiry_manually_decided($post_id)) {
         update_post_meta($post_id, '_screen_done', '1');
+        delete_post_meta($post_id, '_screen_ip');
         wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
         wp_clear_scheduled_hook('achord_inquiry_screen_now', [$post_id]);
         return 0;
@@ -345,6 +351,7 @@ function achord_inquiry_finish_screened_locked(int $post_id, array $fields): int
         }
     }
     update_post_meta($post_id, '_screen_done', '1');
+    delete_post_meta($post_id, '_screen_ip');
     wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
     wp_clear_scheduled_hook('achord_inquiry_screen_now', [$post_id]);
     return in_array($verdict, ['spam', 'suspect'], true) ? 0 : $post_id;
