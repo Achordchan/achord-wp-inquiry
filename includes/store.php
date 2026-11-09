@@ -154,6 +154,19 @@ function achord_inquiry_rest_update_refused_params($request, array $writable): a
  */
 function achord_inquiry_set_invalid(int $post_id, string $reason, bool $auto = false): void
 {
+    // The screening calls this holding the lock already (re-entrant); an administrator waits for a running screening.
+    achord_inquiry_lock($post_id);
+    try {
+        achord_inquiry_set_invalid_locked($post_id, $reason, $auto);
+    } finally {
+        achord_inquiry_unlock($post_id);
+    }
+}
+
+function achord_inquiry_set_invalid_locked(int $post_id, string $reason, bool $auto): void
+{
+    // Read what another request may have written while we waited, not this request's cached copy.
+    wp_cache_delete($post_id, 'post_meta');
     $reason = trim(sanitize_text_field($reason));
     if ($reason === '') {
         delete_post_meta($post_id, '_invalid');
@@ -163,7 +176,14 @@ function achord_inquiry_set_invalid(int $post_id, string $reason, bool $auto = f
         $verdict = (string) get_post_meta($post_id, '_screen_verdict', true);
         $unfinished = get_post_meta($post_id, '_screen_done', true) !== '1' && get_post_meta($post_id, '_blocked', true) === '';
         if (($verdict === 'spam' || $unfinished) && get_post_meta($post_id, '_mail_sent', true) === '') {
-            achord_inquiry_send_mail(array_diff_key(achord_inquiry_record($post_id), ['invalid' => 1, 'screen_verdict' => 1, 'screen_reason' => 1]), $post_id);
+            // Sent from the administrator's request: the sender's saved IP (or none) stands in for theirs.
+            $record = achord_inquiry_record($post_id);
+            achord_inquiry_ip_override((string) ($record['ip'] ?? ''));
+            try {
+                achord_inquiry_send_mail(array_diff_key($record, ['invalid' => 1, 'screen_verdict' => 1, 'screen_reason' => 1]), $post_id);
+            } finally {
+                achord_inquiry_ip_override(null, true);
+            }
         }
         // The administrator has decided: the safety net must not mark it invalid again.
         if (get_post_meta($post_id, '_blocked', true) === '') {

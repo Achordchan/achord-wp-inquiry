@@ -96,6 +96,7 @@ function wp_insert_post($a, $e = false) { $a['post_title'] = stripslashes($a['po
 // 和 WordPress 一样，存之前先 unslash。
 function update_post_meta($id, $k, $v) { $GLOBALS['meta'][$id][$k] = stripslashes((string) $v); return true; }
 function get_post_meta($id, $k = '', $single = false) { return $k === '' ? array_map(fn($v) => [$v], $GLOBALS['meta'][$id] ?? []) : ($GLOBALS['meta'][$id][$k] ?? ''); }
+function wp_cache_delete($k, $g = '') { $GLOBALS['cache_deletes'][] = [$k, $g]; return true; }
 function wp_mail($to, $subject, $body, $headers = []) { $GLOBALS['mails'][] = compact('to', 'subject', 'body', 'headers'); return true; }
 function achord_dingtalk_dispatch($message, $source) { $GLOBALS['dingtalk'][] = [$message, $source]; }
 
@@ -103,11 +104,26 @@ class FakeWpdb
 {
     public string $options = 'wp_options';
     public array $rows = [];
+    public array $locks = [];
     public function prepare($sql, ...$args) { return [$sql, $args]; }
     public function esc_like($s) { return $s; }
     public function query($q)
     {
         [$sql, $args] = $q;
+        if (str_starts_with($sql, 'INSERT IGNORE') && count($args) === 2) {
+            if (isset($this->locks[$args[0]])) {
+                return 0;
+            }
+            $this->locks[$args[0]] = (int) $args[1];
+            return 1;
+        }
+        if (str_starts_with($sql, 'DELETE') && str_contains($sql, 'option_name = %s')) {
+            if (isset($this->locks[$args[0]]) && (count($args) === 1 || $this->locks[$args[0]] < $args[1])) {
+                unset($this->locks[$args[0]]);
+                return 1;
+            }
+            return 0;
+        }
         if (str_starts_with($sql, 'INSERT IGNORE')) {
             $this->rows[$args[0]] ??= 0;
             return 1;
@@ -483,6 +499,19 @@ $a = achord_inquiry_finish_screened(711, ['name' => 'M', 'email' => 'm@client.te
 $GLOBALS['meta'][712] = ['_name' => 'R', '_email' => 'r@client.test', '_screen_done' => '1'];
 $b = achord_inquiry_finish_screened(712, ['name' => 'R', 'email' => 'r@client.test', 'screen_verdict' => 'spam', 'screen_reason' => 'x']);
 check($a === 0 && $b === 0 && !$GLOBALS['mails'] && !$GLOBALS['dingtalk'] && $GLOBALS['meta'][711]['_invalid'] === '后台人工标记' && ($GLOBALS['meta'][712]['_invalid'] ?? '') === '', '等 AI 期间人工标记/恢复：判定不覆盖、不发通知');
+// 管理员「恢复有效」补发邮件时，不把管理员自己的 IP 当成提交人 IP；用询盘存下的 IP。
+$GLOBALS['mails'] = [];
+$GLOBALS['meta'][713] = ['_name' => 'Back', '_email' => 'back@client.test', '_ip' => '198.51.100.9', '_screen_verdict' => 'spam', '_screen_done' => '1', '_invalid' => 'x', '_invalid_auto' => '1'];
+achord_inquiry_set_invalid(713, '');
+check(count($GLOBALS['mails']) === 1 && str_contains($GLOBALS['mails'][0]['body'], '198.51.100.9') && !str_contains($GLOBALS['mails'][0]['body'], (string) $_SERVER['REMOTE_ADDR']) && achord_inquiry_client_ip() === $_SERVER['REMOTE_ADDR'], '恢复有效补发：用存下的提交人 IP，结束后复原');
+// 收尾和人工标记共用一把锁：别人拿着锁时拿不到，用完都放掉。
+check(!$GLOBALS['wpdb']->locks, '收尾、标记做完都放掉锁');
+$GLOBALS['wpdb']->locks['_achord_inquiry_lock_714'] = time() + 60;
+check(achord_inquiry_lock(714, 0.0) === false, '锁被占着时拿不到');
+$GLOBALS['wpdb']->locks['_achord_inquiry_lock_714'] = time() - 1;
+check(achord_inquiry_lock(714, 0.0) === true && achord_inquiry_lock(714, 0.0) === true, '过期的锁可以接手；同一请求内可重入');
+achord_inquiry_unlock(714); achord_inquiry_unlock(714);
+check(!$GLOBALS['wpdb']->locks, '重入的锁全部放掉才删');
 $GLOBALS['gets'] = [];
 $short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
 check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');

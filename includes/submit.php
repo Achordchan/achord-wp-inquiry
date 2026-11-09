@@ -209,6 +209,19 @@ function achord_inquiry_finish_screened(int $post_id, array $fields): int
 {
     // An administrator may have marked or restored it while the AI was still thinking (or before the safety net ran):
     // restoring finishes the screening (_screen_done), a manual invalid mark has no _invalid_auto. Their call stands.
+    // Under the inquiry's lock, so a restore or mark from the list cannot slip in between the check and the actions.
+    achord_inquiry_lock($post_id);
+    try {
+        return achord_inquiry_finish_screened_locked($post_id, $fields);
+    } finally {
+        achord_inquiry_unlock($post_id);
+    }
+}
+
+function achord_inquiry_finish_screened_locked(int $post_id, array $fields): int
+{
+    // Read what another request may have written while we waited, not this request's cached copy.
+    wp_cache_delete($post_id, 'post_meta');
     if (achord_inquiry_manually_decided($post_id)) {
         update_post_meta($post_id, '_screen_done', '1');
         wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
