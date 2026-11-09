@@ -536,13 +536,15 @@ $GLOBALS['mails'] = []; $GLOBALS['ai_requests'] = []; $GLOBALS['scheduled'] = []
 $GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'stars' => 4, 'summary' => 's']);
 $_POST = ['name' => 'Fast', 'email' => 'fast@client.test', 'message' => 'Need a 5 ton knuckle boom crane', 'boblift_inquiry_response' => 'json', 'boblift_inquiry_nonce' => 'good-boblift_submit_inquiry'];
 $_SERVER['REMOTE_ADDR'] = '192.0.2.120';
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['store_ip'] = '0';
 try { achord_inquiry_handle(); $fast = null; } catch (JsonExit $e) { $fast = $e; }
 $fid = (int) ($fast->data['id'] ?? 0);
 check($fast && $fast->success && $fid > 0 && !$GLOBALS['mails'] && !$GLOBALS['ai_requests'] && isset($GLOBALS['scheduled']['achord_inquiry_screen_now' . json_encode([$fid])]), '提交立刻返回成功，AI 和通知交给后台');
-check(($GLOBALS['meta'][$fid]['_screen_ip'] ?? '') === '192.0.2.120', '后台判断用的提交人 IP 先临时存着');
+check(!isset($GLOBALS['meta'][$fid]['_screen_ip']) && ($GLOBALS['meta'][$fid]['_ip'] ?? '') === '', '没开「保存 IP」时询盘里不写 IP');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['store_ip'] = '1';
 $_SERVER['REMOTE_ADDR'] = '10.0.0.1';
-achord_inquiry_screen_saved($fid);
-check(count($GLOBALS['mails']) === 1 && str_contains($GLOBALS['mails'][0]['body'], '192.0.2.120') && !isset($GLOBALS['meta'][$fid]['_screen_ip']) && count($GLOBALS['ai_requests']) === 1, '后台判断完才发邮件，用提交人 IP，之后删掉临时 IP');
+achord_inquiry_screen_saved($fid, '192.0.2.120');
+check(count($GLOBALS['mails']) === 1 && str_contains($GLOBALS['mails'][0]['body'], '192.0.2.120') && count($GLOBALS['ai_requests']) === 1, '答复后同一请求接着判断：用内存里的提交人 IP，判断完才发邮件');
 $_SERVER['REMOTE_ADDR'] = '192.0.2.10';
 // 测试连接按钮：没填全时说清楚；填了就跑两条样例并给出耗时。
 $saved_options = $GLOBALS['options'][ACHORD_INQUIRY_OPTION] ?? null;
@@ -556,15 +558,6 @@ check(str_contains($t[0]['error'], 'HTTP 401') && str_contains($t[0]['error'], '
 $GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'stars' => 5, 'summary' => 'ok']);
 $t = achord_inquiry_ai_test();
 check($t[0]['answer']['stars'] === 5 && is_float($t[0]['seconds']), '测试连接：显示判断结果和耗时');
-// 临时 IP 不留：已完成或进了回收站的询盘，兜底触发时也删掉。
-$GLOBALS['meta'][716] = ['_name' => 'T', '_email' => 't@client.test', '_screen_ip' => '192.0.2.5'];
-$GLOBALS['post_status'][716] = 'trash';
-achord_inquiry_screen_saved(716);
-$GLOBALS['meta'][717] = ['_name' => 'D', '_email' => 'd@client.test', '_screen_ip' => '192.0.2.6', '_screen_done' => '1'];
-achord_inquiry_screen_saved(717);
-$GLOBALS['meta'][718] = ['_name' => 'M', '_email' => 'm@client.test', '_screen_ip' => '192.0.2.7', '_invalid' => '后台人工标记'];
-achord_inquiry_finish_screened(718, ['screen_verdict' => 'ok']);
-check(!isset($GLOBALS['meta'][716]['_screen_ip']) && !isset($GLOBALS['meta'][717]['_screen_ip']) && !isset($GLOBALS['meta'][718]['_screen_ip']), '回收站、已完成、人工处理过的询盘都删掉临时 IP');
 // 另一次判断还在时限内：不当成断开，一分钟后再看。
 $GLOBALS['mails'] = []; $GLOBALS['scheduled'] = [];
 $GLOBALS['meta'][719] = ['_name' => 'Run', '_email' => 'run@client.test', '_screen_started' => (string) (time() - 30)];
