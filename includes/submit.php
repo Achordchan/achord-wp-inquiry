@@ -211,13 +211,13 @@ function achord_inquiry_finish_screened(int $post_id, array $fields): int
     $reason = (string) ($fields['screen_reason'] ?? '');
     $by = (string) ($fields['screened_by'] ?? '');
     if ($verdict === 'spam') {
-        achord_inquiry_set_invalid($post_id, '已拦截（' . $by . '）：' . $reason);
+        achord_inquiry_set_invalid($post_id, '已拦截（' . $by . '）：' . $reason, true);
         if (function_exists('achord_dingtalk_dispatch') && apply_filters('achord_inquiry_send_dingtalk', true, $fields)) {
             achord_dingtalk_dispatch(achord_inquiry_dingtalk_blocked_message($post_id, $fields), (string) achord_inquiry_config()['dingtalk_source']);
         }
     } else {
         if ($verdict === 'suspect') {
-            achord_inquiry_set_invalid($post_id, '自动判定疑似垃圾：' . $reason);
+            achord_inquiry_set_invalid($post_id, '自动判定疑似垃圾：' . $reason, true);
             $fields['suspect'] = $reason;
         }
         if (get_post_meta($post_id, '_mail_sent', true) === '') {
@@ -244,8 +244,9 @@ function achord_inquiry_handle_unscreened($post_id): void
     if ($status === false || $status === 'trash' || get_post_type($post_id) !== achord_inquiry_post_type()) {
         return;
     }
-    // An administrator marked it invalid meanwhile: their call stands, nothing is sent.
-    if (get_post_meta($post_id, '_invalid', true) !== '' && get_post_meta($post_id, '_screen_verdict', true) !== 'spam') {
+    // An administrator marked it invalid meanwhile: their call stands, nothing is sent. The screening's own mark
+    // (_invalid_auto, spam or suspect cut off before its notice) is finished below instead.
+    if (get_post_meta($post_id, '_invalid', true) !== '' && get_post_meta($post_id, '_invalid_auto', true) !== '1') {
         update_post_meta($post_id, '_screen_done', '1');
         return;
     }

@@ -149,18 +149,33 @@ function achord_inquiry_rest_update_refused_params($request, array $writable): a
 
 /**
  * Mark an inquiry invalid (a reason such as 与产品无关) or valid again (''). The inquiry stays as it was; the flag only
- * tells reports and the list that it is not a real lead.
+ * tells reports and the list that it is not a real lead. $auto is the screening's own mark (_invalid_auto), which the
+ * safety net may finish; a mark or restore from the list or the connector is the administrator's call and stands.
  */
-function achord_inquiry_set_invalid(int $post_id, string $reason): void
+function achord_inquiry_set_invalid(int $post_id, string $reason, bool $auto = false): void
 {
     $reason = trim(sanitize_text_field($reason));
     if ($reason === '') {
         delete_post_meta($post_id, '_invalid');
-        // An inquiry the screening stopped never reached sales: restoring it sends the email it missed, once.
-        if (get_post_meta($post_id, '_screen_verdict', true) === 'spam' && get_post_meta($post_id, '_mail_sent', true) === '') {
+        delete_post_meta($post_id, '_invalid_auto');
+        // An inquiry the screening stopped (or never finished) never reached sales: restoring it sends the email it
+        // missed, once. A blocklist draft stays as it was.
+        $verdict = (string) get_post_meta($post_id, '_screen_verdict', true);
+        $unfinished = get_post_meta($post_id, '_screen_done', true) !== '1' && get_post_meta($post_id, '_blocked', true) === '';
+        if (($verdict === 'spam' || $unfinished) && get_post_meta($post_id, '_mail_sent', true) === '') {
             achord_inquiry_send_mail(array_diff_key(achord_inquiry_record($post_id), ['invalid' => 1, 'screen_verdict' => 1, 'screen_reason' => 1]), $post_id);
         }
+        // The administrator has decided: the safety net must not mark it invalid again.
+        if (get_post_meta($post_id, '_blocked', true) === '') {
+            update_post_meta($post_id, '_screen_done', '1');
+            wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
+        }
         return;
+    }
+    if ($auto) {
+        update_post_meta($post_id, '_invalid_auto', '1');
+    } else {
+        delete_post_meta($post_id, '_invalid_auto');
     }
     update_post_meta($post_id, '_invalid', wp_slash($reason));
 }

@@ -459,6 +459,23 @@ $GLOBALS['meta'][706] = ['_name' => 'Other', '_email' => 'o@client.test'];
 $GLOBALS['post_type'][706] = 'post';
 achord_inquiry_handle_unscreened(706);
 check(!$GLOBALS['mails'], '兜底不补发：已进回收站、已被人工标无效、不是询盘');
+// 判成疑似、自动标了无效但邮件没发就断开：自动标记不算人工决定，兜底照发带【疑似垃圾】的邮件。
+$GLOBALS['meta'][708] = ['_name' => 'Sus', '_email' => 'sus@client.test', '_message' => 'x', '_screen_verdict' => 'suspect', '_screen_reason' => '机房 IP', '_invalid' => '自动判定疑似垃圾：机房 IP', '_invalid_auto' => '1'];
+achord_inquiry_handle_unscreened(708);
+check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【疑似垃圾】') && ($GLOBALS['meta'][708]['_screen_done'] ?? '') === '1', '自动标的疑似：兜底照发通知');
+// 自动标记后管理员又手动标无效：算人工决定，兜底不发。
+$GLOBALS['mails'] = [];
+$GLOBALS['meta'][710] = ['_name' => 'Sus2', '_email' => 'sus2@client.test', '_screen_verdict' => 'suspect', '_screen_reason' => 'x', '_invalid' => 'x', '_invalid_auto' => '1'];
+achord_inquiry_set_invalid(710, '与产品无关');
+achord_inquiry_handle_unscreened(710);
+check(!$GLOBALS['mails'] && !isset($GLOBALS['meta'][710]['_invalid_auto']), '人工改标无效后兜底不发');
+// 判成垃圾、断开后管理员先「恢复有效」：补发邮件一次，兜底不再标回无效、不再发拦截钉钉。
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
+$GLOBALS['meta'][709] = ['_name' => 'Real', '_email' => 'real@client.test', '_message' => 'x', '_screen_verdict' => 'spam', '_screen_reason' => 'x', '_invalid' => '已拦截：x', '_invalid_auto' => '1'];
+$GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([709])] = 1;
+achord_inquiry_set_invalid(709, '');
+achord_inquiry_handle_unscreened(709);
+check(count($GLOBALS['mails']) === 1 && !$GLOBALS['dingtalk'] && ($GLOBALS['meta'][709]['_invalid'] ?? '') === '' && !isset($GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([709])]), '恢复有效后兜底不再标回无效');
 $GLOBALS['gets'] = [];
 $short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
 check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');
