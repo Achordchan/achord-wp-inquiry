@@ -3,12 +3,15 @@ Contributors: achord
 Requires at least: 6.2
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 0.4.2
+Stable tag: 0.4.3
 License: GPLv2 or later
 
 网站询盘的后台：接收、防垃圾、来源渠道、存储、通知邮件、钉钉。表单外观由主题负责。
 
 == Changelog ==
+
+= 0.4.3 =
+* AI 判垃圾的询盘邮件照发（标题【AI 拦截】、正文红框写明原因），方便看原件；钉钉仍只推拦截提示，仍标无效、不计转化。
 
 = 0.4.2 =
 * 测试连接：样例按真实询盘的样子发给 AI（不再附「这是测试」的说明，模型会据此判垃圾）；判垃圾的结果用黄色提示，页面写明预期结果。

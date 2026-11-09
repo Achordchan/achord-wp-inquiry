@@ -416,7 +416,7 @@ check(str_contains($sent_body['messages'][1]['content'] ?? '', 'teixeirasonae.te
 check(str_contains($sent_body['messages'][0]['content'] ?? '', '联网'), '提示词让能联网的模型去核实');
 check(str_contains($sent_body['messages'][0]['content'] ?? '', 'Truck Tail Lift'), '提示词带上本站产品清单');
 check($r->success && $r->data['id'] === 0 && !str_contains($r->data['redirect'], 'sent='), 'AI 垃圾：不给 ?sent=，不计转化');
-check(!$GLOBALS['mails'], 'AI 垃圾：不发邮件');
+check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【AI 拦截】') && str_contains($GLOBALS['mails'][0]['body'], 'AI 已拦截'), 'AI 垃圾：邮件照发，标题和正文标「AI 拦截」');
 check(count($GLOBALS['dingtalk']) === 1 && str_contains($GLOBALS['dingtalk'][0][0]['title'], '拦截一条垃圾询盘') && str_contains($GLOBALS['dingtalk'][0][0]['headline'], '冒充 Sonae'), 'AI 垃圾：钉钉推「拦截一条垃圾询盘，原因」');
 check(str_contains((string) ($GLOBALS['meta'][$sid]['_invalid'] ?? ''), '冒充 Sonae') && ($GLOBALS['meta'][$sid]['_screen_verdict'] ?? '') === 'spam', 'AI 垃圾：标无效，记下判定');
 achord_inquiry_set_invalid($sid, '');
@@ -459,11 +459,11 @@ achord_inquiry_screen_saved(701);
 check(count($GLOBALS['mails']) === 1 && ($GLOBALS['meta'][701]['_screen_verdict'] ?? '') === 'unfinished', '后台判断中途断开的询盘：兜底按普通询盘补发');
 achord_inquiry_screen_saved(701);
 check(count($GLOBALS['mails']) === 1, '兜底只补发一次');
-// 判定已写下、但拦截动作没做完就断开：兜底按判定把事做完（标无效、钉钉拦截、不发邮件）。
+// 判定已写下、但拦截动作没做完就断开：兜底按判定把事做完（标无效、钉钉拦截、邮件标「AI 拦截」）。
 $GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
 $GLOBALS['meta'][702] = ['_name' => 'Spam', '_email' => 's@scam.test', '_screen_verdict' => 'spam', '_screen_reason' => '群发骗局', '_screened_by' => 'AI（m1）'];
 achord_inquiry_screen_saved(702);
-check(!$GLOBALS['mails'] && count($GLOBALS['dingtalk']) === 1 && str_contains((string) ($GLOBALS['meta'][702]['_invalid'] ?? ''), '群发骗局') && ($GLOBALS['meta'][702]['_screen_done'] ?? '') === '1', '判定后断开：兜底照判定拦截');
+check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【AI 拦截】') && count($GLOBALS['dingtalk']) === 1 && str_contains((string) ($GLOBALS['meta'][702]['_invalid'] ?? ''), '群发骗局') && ($GLOBALS['meta'][702]['_screen_done'] ?? '') === '1', '判定后断开：兜底照判定拦截');
 $ip_values = array_column(array_filter($GLOBALS['dingtalk'][0][0]['meta'], fn($m) => $m['label'] === 'IP 地址'), 'value');
 check($ip_values === [] && achord_inquiry_client_ip() === $_SERVER['REMOTE_ADDR'], '兜底（定时任务）不把服务器自己的 IP 当成提交人 IP；结束后恢复');
 $GLOBALS['dingtalk'] = [];
@@ -471,6 +471,7 @@ $GLOBALS['meta'][707] = ['_name' => 'Spam2', '_email' => 's2@scam.test', '_ip' =
 achord_inquiry_screen_saved(707);
 check(str_starts_with((string) (array_column(array_filter($GLOBALS['dingtalk'][0][0]['meta'], fn($m) => $m['label'] === 'IP 地址'), 'value')[0] ?? ''), '198.51.100.7'), '兜底用询盘存下的提交人 IP');
 // 正常询盘判定写下、邮件没发就断开：兜底补发。
+$GLOBALS['mails'] = [];
 $GLOBALS['meta'][703] = ['_name' => 'Ok', '_email' => 'ok@client.test', '_message' => 'Need 5 ton crane', '_screen_verdict' => 'ok', '_screen_stars' => '4'];
 achord_inquiry_screen_saved(703);
 check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【★★★★☆】'), '判定后断开：兜底补发带星邮件');

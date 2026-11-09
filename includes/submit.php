@@ -311,7 +311,7 @@ function achord_inquiry_screen_saved($post_id, ?string $ip = null): void
 /**
  * What the verdict asks for, then marks the inquiry done (_screen_done) and lifts the safety net; returns the id the
  * thank-you page may carry (0 for spam and suspect, so no conversion; null when another request holds the inquiry, which
- * is then left to the safety net). Spam: marked invalid, a one-line DingTalk notice, no email (恢复有效 sends it). Suspect: marked invalid, sent flagged. Otherwise sent with its stars.
+ * is then left to the safety net). Spam: marked invalid, a one-line DingTalk notice, the email marked 【AI 拦截】. Suspect: marked invalid, sent flagged. Otherwise sent with its stars.
  */
 function achord_inquiry_finish_screened(int $post_id, array $fields): ?int
 {
@@ -345,6 +345,10 @@ function achord_inquiry_finish_screened_locked(int $post_id, array $fields): int
         achord_inquiry_set_invalid($post_id, '已拦截（' . $by . '）：' . $reason, true);
         if (function_exists('achord_dingtalk_dispatch') && apply_filters('achord_inquiry_send_dingtalk', true, $fields)) {
             achord_dingtalk_dispatch(achord_inquiry_dingtalk_blocked_message($post_id, $fields), (string) achord_inquiry_config()['dingtalk_source']);
+        }
+        // The email still goes out, marked 【AI 拦截】, so the original is in the mailbox.
+        if (get_post_meta($post_id, '_mail_sent', true) === '') {
+            achord_inquiry_send_mail($fields, $post_id);
         }
     } else {
         if ($verdict === 'suspect') {
