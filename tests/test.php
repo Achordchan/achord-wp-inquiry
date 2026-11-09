@@ -439,6 +439,12 @@ $GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
 $GLOBALS['meta'][702] = ['_name' => 'Spam', '_email' => 's@scam.test', '_screen_verdict' => 'spam', '_screen_reason' => '群发骗局', '_screened_by' => 'AI（m1）'];
 achord_inquiry_handle_unscreened(702);
 check(!$GLOBALS['mails'] && count($GLOBALS['dingtalk']) === 1 && str_contains((string) ($GLOBALS['meta'][702]['_invalid'] ?? ''), '群发骗局') && ($GLOBALS['meta'][702]['_screen_done'] ?? '') === '1', '判定后断开：兜底照判定拦截');
+$ip_values = array_column(array_filter($GLOBALS['dingtalk'][0][0]['meta'], fn($m) => $m['label'] === 'IP 地址'), 'value');
+check($ip_values === [] && achord_inquiry_client_ip() === $_SERVER['REMOTE_ADDR'], '兜底（定时任务）不把服务器自己的 IP 当成提交人 IP；结束后恢复');
+$GLOBALS['dingtalk'] = [];
+$GLOBALS['meta'][707] = ['_name' => 'Spam2', '_email' => 's2@scam.test', '_ip' => '198.51.100.7', '_screen_verdict' => 'spam', '_screen_reason' => 'x'];
+achord_inquiry_handle_unscreened(707);
+check(str_starts_with((string) (array_column(array_filter($GLOBALS['dingtalk'][0][0]['meta'], fn($m) => $m['label'] === 'IP 地址'), 'value')[0] ?? ''), '198.51.100.7'), '兜底用询盘存下的提交人 IP');
 // 正常询盘判定写下、邮件没发就断开：兜底补发。
 $GLOBALS['meta'][703] = ['_name' => 'Ok', '_email' => 'ok@client.test', '_message' => 'Need 5 ton crane', '_screen_verdict' => 'ok', '_screen_stars' => '4'];
 achord_inquiry_handle_unscreened(703);

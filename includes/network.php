@@ -39,6 +39,21 @@ function achord_inquiry_ip_in_range(string $ip, string $range): bool
 }
 
 /**
+ * The sender's IP while finishing an earlier submission from WP-Cron (achord_inquiry_handle_unscreened()): the IP saved
+ * with the inquiry, or '' when IP storage is off, stands in for the cron request's own address. null when not set.
+ */
+function achord_inquiry_ip_override(?string $ip = null, bool $reset = false): ?string
+{
+    static $override = null;
+    if ($reset) {
+        $override = null;
+    } elseif ($ip !== null) {
+        $override = $ip;
+    }
+    return $override;
+}
+
+/**
  * The visitor's IP address: CF-Connecting-IP when the request really came through Cloudflare, else REMOTE_ADDR (on
  * WordPress.com that is already the visitor's own address). A host behind another reverse proxy, which leaves its own
  * address in REMOTE_ADDR, resolves the visitor through the achord_inquiry_client_ip filter, which receives the peer
@@ -46,6 +61,10 @@ function achord_inquiry_ip_in_range(string $ip, string $range): bool
  */
 function achord_inquiry_client_ip(): string
 {
+    $override = achord_inquiry_ip_override();
+    if ($override !== null) {
+        return $override;
+    }
     $peer = sanitize_text_field((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
     $ip = $peer;
     $cloudflare = trim((string) ($_SERVER['HTTP_CF_CONNECTING_IP'] ?? ''));

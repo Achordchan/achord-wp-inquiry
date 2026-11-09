@@ -257,5 +257,11 @@ function achord_inquiry_handle_unscreened($post_id): void
         update_post_meta($post_id, '_screen_verdict', 'unfinished');
         update_post_meta($post_id, '_screened_by', wp_slash($fields['screened_by']));
     }
-    achord_inquiry_finish_screened($post_id, $fields);
+    // Sent from WP-Cron: the sender's saved IP (or none) stands in for the cron request's own address.
+    achord_inquiry_ip_override((string) ($fields['ip'] ?? ''));
+    try {
+        achord_inquiry_finish_screened($post_id, $fields);
+    } finally {
+        achord_inquiry_ip_override(null, true);
+    }
 }
