@@ -172,7 +172,7 @@ function achord_inquiry_ai_assess(array $fields, array $facts, int $max_seconds 
     }
     $user = "询盘（客户填写）：\n" . wp_json_encode($inquiry, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "\n\n服务器查到的事实：\n" . wp_json_encode($facts, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     $response = wp_remote_post($config['url'], [
-        'timeout' => max(1, min($max_seconds, 60, (int) achord_inquiry_options()['ai_timeout'] ?: 20)),
+        'timeout' => max(1, min($max_seconds, 60, (int) achord_inquiry_options()['ai_timeout'] ?: 30)),
         'headers' => ['Authorization' => 'Bearer ' . $config['key'], 'Content-Type' => 'application/json'],
         'body' => wp_json_encode([
             'model' => $config['model'],
@@ -220,7 +220,7 @@ function achord_inquiry_screen(array $fields, string $ip): array
         // lookups leave, and none at all when fewer than 5 seconds are left.
         $started = microtime(true);
         $facts = achord_inquiry_screen_facts($fields, $ip);
-        $left = (int) floor((float) apply_filters('achord_inquiry_screen_budget', 25) - (microtime(true) - $started));
+        $left = (int) floor((float) apply_filters('achord_inquiry_screen_budget', 40) - (microtime(true) - $started));
         $answer = $left >= 5 ? achord_inquiry_ai_assess($fields, $facts, $left) : null;
         if ($answer !== null) {
             return ['verdict' => $answer['spam'] ? 'spam' : 'ok'] + $answer;

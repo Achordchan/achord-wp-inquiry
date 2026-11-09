@@ -79,7 +79,7 @@ function achord_inquiry_options(): array
         'ai_base_url' => '',
         'ai_api_key' => '',
         'ai_model' => '',
-        'ai_timeout' => '20',
+        'ai_timeout' => '30',
     ];
     $defaults = array_merge($defaults, array_intersect_key((array) apply_filters('achord_inquiry_default_options', $defaults), $defaults));
     $saved = get_option(ACHORD_INQUIRY_OPTION, null);
