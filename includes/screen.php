@@ -229,13 +229,14 @@ function achord_inquiry_ai_request(array $fields, array $facts, int $max_seconds
 function achord_inquiry_ai_test(): array
 {
     $samples = [
-        '真实买家样例' => ['name' => 'Juan Dela Cruz', 'email' => 'juan@example.com', 'country' => 'Philippines', 'message' => 'Hello, we need a 5 ton knuckle boom crane to mount on our Isuzu FVR truck for building materials delivery. Please send price CIF Manila and delivery time.'],
-        '群发骗局样例' => ['name' => 'Bill', 'email' => 'bill@example.net', 'message' => 'Dear Sir, kindly send your latest catalogue and price list with MOQ. Are you the right person to discuss? Please confirm a Zoom meeting this week.'],
+        '真实买家样例' => ['name' => 'Juan Dela Cruz', 'email' => 'juan.delacruz@dcbuilders.com.ph', 'company' => 'DC Builders Supply', 'country' => 'Philippines', 'message' => 'Hello, we need a 5 ton knuckle boom crane to mount on our Isuzu FVR truck for building materials delivery. Please send price CIF Manila and delivery time.'],
+        '群发骗局样例' => ['name' => 'Bill', 'email' => 'bill@procure-argos.com', 'message' => 'Dear Sir, kindly send your latest catalogue and price list with MOQ. Are you the right person to discuss? Please confirm a Zoom meeting this week.'],
     ];
     $results = [];
     foreach ($samples as $label => $fields) {
         $start = microtime(true);
-        $result = achord_inquiry_ai_request($fields, ['说明' => '这是后台「测试连接」发的样例询盘，不是真实询盘'], 60);
+        // Sent exactly as a real inquiry would be (no "this is a test" note, which the model would judge on).
+        $result = achord_inquiry_ai_request($fields, ['来源渠道' => '自然搜索', '邮箱类型' => '公司域名'], 60);
         $results[] = ['label' => $label, 'seconds' => round(microtime(true) - $start, 1)] + $result;
     }
     return $results;

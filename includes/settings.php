@@ -97,7 +97,7 @@ function achord_inquiry_settings_page(): void
     echo '</form>';
 
     // The test button: its own form, so it never saves the settings above. It uses what is saved.
-    echo '<h2>测试 AI 连接</h2><p>先点上面的「保存更改」，再点测试：用已保存的设置发两条样例询盘（一条真实买家、一条群发骗局）给 AI，显示结果和耗时。不会存询盘、不发邮件和钉钉。</p>';
+    echo '<h2>测试 AI 连接</h2><p>先点上面的「保存更改」，再点测试：用已保存的设置发两条样例询盘（一条真实买家、一条群发骗局）给 AI，显示结果和耗时。不会存询盘、不发邮件和钉钉。正常情况应是第一条判正常并给星、第二条判垃圾。</p>';
     $results = get_transient('achord_inquiry_ai_test_' . get_current_user_id());
     if (is_array($results)) {
         delete_transient('achord_inquiry_ai_test_' . get_current_user_id());
@@ -105,7 +105,8 @@ function achord_inquiry_settings_page(): void
             $answer = $result['answer'] ?? null;
             if (is_array($answer)) {
                 $text = $answer['spam'] ? '判为垃圾：' . $answer['reason'] : '正常询盘 ' . achord_inquiry_stars_text((int) $answer['stars']) . ($answer['summary'] !== '' ? '，' . $answer['summary'] : '');
-                $class = 'notice-success';
+                // Connected either way; amber when the verdict is spam so it is not read as a pass at a glance.
+                $class = $answer['spam'] ? 'notice-warning' : 'notice-success';
             } else {
                 $text = '失败：' . (string) ($result['error'] ?? '');
                 $class = 'notice-error';
