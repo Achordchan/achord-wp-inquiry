@@ -4,6 +4,7 @@
 define('ABSPATH', __DIR__);
 define('WEEK_IN_SECONDS', 604800);
 define('HOUR_IN_SECONDS', 3600);
+define('DAY_IN_SECONDS', 86400);
 
 $GLOBALS['options'] = [];
 $GLOBALS['filters'] = [];
@@ -48,6 +49,9 @@ function home_url($p = '') { return 'https://example.com' . $p; }
 function admin_url($p = '') { return 'https://example.com/wp-admin/' . $p; }
 function untrailingslashit($s) { return rtrim($s, '/'); }
 function sanitize_text_field($s) { return trim(preg_replace('/\s+/', ' ', strip_tags((string) $s))); }
+function wp_json_encode($v, $f = 0) { return json_encode($v, $f); }
+function get_posts($a = []) { return $GLOBALS['posts'] ?? []; }
+function get_the_title($p = 0) { return is_object($p) ? $p->post_title : ''; }
 function sanitize_textarea_field($s) { return trim(strip_tags((string) $s)); }
 function sanitize_email($s) { return filter_var(trim((string) $s), FILTER_VALIDATE_EMAIL) ?: ''; }
 function sanitize_key($s) { return preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $s)); }
@@ -67,7 +71,13 @@ function current_time($f) { return gmdate($f, 1767225600); }
 function get_transient($k) { return $GLOBALS['transients'][$k] ?? false; }
 function set_transient($k, $v, $t = 0) { $GLOBALS['transients'][$k] = $v; return true; }
 function wp_remote_get($u, $a = []) { $GLOBALS['gets'][] = $u; return ['code' => 200, 'body' => 'CA']; }
-function wp_remote_post($u, $a = []) { return ['code' => 200, 'body' => '{"success":true}']; }
+function wp_remote_post($u, $a = []) {
+    if (str_contains($u, '/chat/completions')) {
+        $GLOBALS['ai_requests'][] = ['url' => $u, 'args' => $a];
+        return $GLOBALS['ai_reply'] ?? new WP_Error('timeout', 'timed out');
+    }
+    return ['code' => 200, 'body' => '{"success":true}'];
+}
 function wp_remote_retrieve_body($r) { return $r['body']; }
 function wp_remote_retrieve_response_code($r) { return $r['code']; }
 function is_wp_error($v) { return $v instanceof WP_Error; }
@@ -113,9 +123,11 @@ require dirname(__DIR__) . '/includes/config.php';
 require dirname(__DIR__) . '/includes/context.php';
 require dirname(__DIR__) . '/includes/network.php';
 require dirname(__DIR__) . '/includes/guard.php';
+require dirname(__DIR__) . '/includes/screen.php';
 require dirname(__DIR__) . '/includes/store.php';
 require dirname(__DIR__) . '/includes/notify.php';
 require dirname(__DIR__) . '/includes/submit.php';
+require dirname(__DIR__) . '/includes/settings.php';
 
 $failures = 0;
 function check(bool $ok, string $what): void
@@ -353,6 +365,59 @@ $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['suspect_check'] = '0';
 $r = submit(['name' => 'Yaron', 'email' => 'yaron@scam.test', 'message' => $spam['Yaron']]);
 check($r->success && $r->data['id'] > 0, '关掉自动标记：照旧算正常询盘');
 unset($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['suspect_check']);
+
+
+// AI 判断：设置三项后每条询盘先问 AI。
+$ai_answer = fn(array $json, string $wrap = '%s') => ['code' => 200, 'body' => json_encode(['choices' => [['message' => ['content' => sprintf($wrap, json_encode($json, JSON_UNESCAPED_UNICODE))]]]])];
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = array_merge($GLOBALS['options'][ACHORD_INQUIRY_OPTION] ?? [], ['ai_base_url' => 'https://ai.example.test/v1/', 'ai_api_key' => 'sk-test', 'ai_model' => 'm1']);
+check(achord_inquiry_ai_config()['url'] === 'https://ai.example.test/v1/chat/completions', 'Base URL 自动补 /chat/completions');
+$_SERVER['REMOTE_ADDR'] = '192.0.2.81';
+
+// 垃圾：不发邮件，钉钉只推一行拦截，标无效，不计转化。
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = []; $GLOBALS['ai_requests'] = [];
+$GLOBALS['posts'] = [(object) ['post_title' => '5 Ton Knuckle Boom Crane SQ5ZA3'], (object) ['post_title' => 'Truck Tail Lift']];
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => true, 'reason' => '冒充 Sonae 采购的群发钓鱼', 'stars' => 0, 'summary' => '']);
+$r = submit(['name' => 'Duarte', 'email' => 'duarte@teixeirasonae.test', 'message' => $spam['Duarte']]);
+$sid = count($GLOBALS['inserted']) + 100;
+$req = $GLOBALS['ai_requests'][0] ?? [];
+$sent_body = json_decode($req['args']['body'] ?? '{}', true);
+check(($req['args']['headers']['Authorization'] ?? '') === 'Bearer sk-test' && ($sent_body['model'] ?? '') === 'm1', 'AI 请求带密钥和模型');
+check(str_contains($sent_body['messages'][1]['content'] ?? '', 'teixeirasonae.test') && str_contains($sent_body['messages'][1]['content'] ?? '', '公司域名'), 'AI 收到询盘和服务器查到的事实');
+check(str_contains($sent_body['messages'][0]['content'] ?? '', '联网'), '提示词让能联网的模型去核实');
+check(str_contains($sent_body['messages'][0]['content'] ?? '', 'Truck Tail Lift'), '提示词带上本站产品清单');
+check($r->success && $r->data['id'] === 0 && !str_contains($r->data['redirect'], 'sent='), 'AI 垃圾：不给 ?sent=，不计转化');
+check(!$GLOBALS['mails'], 'AI 垃圾：不发邮件');
+check(count($GLOBALS['dingtalk']) === 1 && str_contains($GLOBALS['dingtalk'][0][0]['title'], '拦截一条垃圾询盘') && str_contains($GLOBALS['dingtalk'][0][0]['headline'], '冒充 Sonae'), 'AI 垃圾：钉钉推「拦截一条垃圾询盘，原因」');
+check(str_contains((string) ($GLOBALS['meta'][$sid]['_invalid'] ?? ''), '冒充 Sonae') && ($GLOBALS['meta'][$sid]['_screen_verdict'] ?? '') === 'spam', 'AI 垃圾：标无效，记下判定');
+achord_inquiry_set_invalid($sid, '');
+check(count($GLOBALS['mails']) === 1 && ($GLOBALS['meta'][$sid]['_mail_sent'] ?? '') === '1', '误判点恢复有效：补发邮件');
+achord_inquiry_set_invalid($sid, 'x'); achord_inquiry_set_invalid($sid, '');
+check(count($GLOBALS['mails']) === 1, '补发邮件只发一次');
+
+// 正常：带星级和背调，照常计转化。
+$_SERVER['REMOTE_ADDR'] = '192.0.2.82';
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'reason' => '', 'stars' => 4, 'summary' => '南非物流公司，要 2 台尾板装 JAC X200'], "```json\n%s\n```");
+$r = submit(['name' => 'Clinton', 'email' => 'clinton@dispense.test', 'message' => $real['Clinton']]);
+$oid = count($GLOBALS['inserted']) + 100;
+check($r->success && $r->data['id'] > 0 && str_contains($r->data['redirect'], 'sent='), 'AI 正常：照常 ?sent= 计转化');
+check(str_starts_with($GLOBALS['mails'][0]['subject'] ?? '', '【★★★★☆】') && str_contains($GLOBALS['mails'][0]['body'] ?? '', '南非物流公司'), 'AI 正常：邮件标题带星、正文有背调');
+check(str_contains($GLOBALS['dingtalk'][0][0]['title'] ?? '', '★★★★☆') && ($GLOBALS['dingtalk'][0][0]['meta'][0]['label'] ?? '') === 'AI 背调', 'AI 正常：钉钉带星和背调');
+check(($GLOBALS['meta'][$oid]['_screen_stars'] ?? '') === '4' && !isset($GLOBALS['meta'][$oid]['_invalid']), 'AI 正常：存下星级，不标无效');
+
+// AI 出错/超时：改用规则。
+$_SERVER['REMOTE_ADDR'] = '192.0.2.83';
+$GLOBALS['mails'] = [];
+unset($GLOBALS['ai_reply']);
+$r = submit(['name' => 'Yaron', 'email' => 'yaron@scam.test', 'message' => $spam['Yaron']]);
+$fid = count($GLOBALS['inserted']) + 100;
+check($r->data['id'] === 0 && str_starts_with($GLOBALS['mails'][0]['subject'] ?? '', '【疑似垃圾】') && str_contains((string) ($GLOBALS['meta'][$fid]['_screened_by'] ?? ''), 'AI 没有按时回答'), 'AI 超时：退回规则，照发邮件但标疑似');
+$GLOBALS['ai_reply'] = ['code' => 200, 'body' => '{"choices":[{"message":{"content":"I cannot help"}}]}'];
+check(achord_inquiry_screen(['message' => $real['Clinton']], '192.0.2.84')['verdict'] === 'ok', 'AI 答非所问：退回规则');
+check(achord_inquiry_sanitize_options(['ai_base_url' => 'http://insecure.test'])['ai_base_url'] === '', 'Base URL 只认 https');
+check(achord_inquiry_sanitize_options(['ai_timeout' => '999'])['ai_timeout'] === '60', '超时最多 60 秒');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['ai_api_key'] = '';
+check(achord_inquiry_ai_config() === null, '没填密钥就不调 AI');
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);

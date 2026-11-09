@@ -160,6 +160,15 @@ function achord_inquiry_admin_mail(array $fields, int $post_id): array
     $message_block = $message !== '' ? $heading('留言') . '<tr><td style="padding:0 36px;"><div style="padding:16px 20px;background:#f5f7fa;border-radius:4px;font-size:16px;line-height:1.75;color:#0b1f33;word-break:break-word;">' . nl2br(esc_html($message), false) . '</div></td></tr>' : '';
     $admin_link = $post_id > 0 ? '<a href="' . esc_url(admin_url('post.php?post=' . $post_id . '&action=edit')) . '" style="color:#94a3b8;">网站后台「询盘」</a>' : '网站后台「询盘」';
     $host = esc_html((string) wp_parse_url(home_url(), PHP_URL_HOST));
+    // The screening's verdict: stars and background note, or why it looks like spam.
+    $screen_block = '';
+    $screen_stars = (int) ($fields['screen_stars'] ?? 0);
+    if (($fields['suspect'] ?? '') !== '' || ($fields['screen_verdict'] ?? '') === 'spam') {
+        $screen_text = '⚠️ 疑似垃圾：' . (string) (($fields['suspect'] ?? '') !== '' ? $fields['suspect'] : ($fields['screen_reason'] ?? '')) . '。已标无效、不计转化；是真客户请在后台点「恢复有效」。';
+        $screen_block = '<tr><td style="padding:16px 36px 0;"><div style="padding:12px 16px;background:#fff7ed;border:1px solid #fed7aa;border-radius:4px;font-size:14px;line-height:1.6;color:#9a3412;">' . esc_html($screen_text) . '</div></td></tr>';
+    } elseif ($screen_stars > 0 || trim((string) ($fields['screen_summary'] ?? '')) !== '') {
+        $screen_block = '<tr><td style="padding:16px 36px 0;"><div style="padding:12px 16px;background:#f0f6ff;border:1px solid #cfe0fb;border-radius:4px;font-size:14px;line-height:1.6;color:#0b1f33;"><span style="font-size:16px;color:#d97706;letter-spacing:1px;">' . esc_html(achord_inquiry_stars_text($screen_stars)) . '</span> &nbsp;<span style="font-size:12px;color:#64748b;">询盘优质度 · ' . esc_html((string) ($fields['screened_by'] ?? '')) . '</span><div style="padding-top:4px;">' . esc_html((string) ($fields['screen_summary'] ?? '')) . '</div></div></td></tr>';
+    }
 
     $body = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head><body style="margin:0;padding:0;background:#eef1f5;">'
         . '<table width="100%" cellspacing="0" cellpadding="0" style="width:100%;background:#eef1f5;-webkit-text-size-adjust:100%;text-size-adjust:100%;' . $font . '"><tr><td align="center" style="padding:32px 0;">'
@@ -168,6 +177,7 @@ function achord_inquiry_admin_mail(array $fields, int $post_id): array
         . '<tr><td style="padding:22px 36px;border-bottom:1px solid #edf0f4;"><table width="100%" cellspacing="0" cellpadding="0"><tr><td style="vertical-align:middle;">' . achord_inquiry_mail_logo() . '</td><td align="right" style="vertical-align:middle;font-size:13px;color:#64748b;">' . esc_html($time) . '</td></tr></table></td></tr>'
         . '<tr><td style="padding:30px 36px 0;"><div style="font-size:26px;line-height:1.3;font-weight:bold;color:#0b1f33;">' . esc_html($type['headline']) . '</div><div style="padding-top:10px;font-size:15px;line-height:1.7;color:#475569;">' . esc_html($type['intro']) . '</div></td></tr>'
         . '<tr><td style="padding:20px 36px 0;"><table width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;border-radius:4px;"><tr><td style="padding:14px 18px;"><div style="font-size:12px;color:#64748b;padding-bottom:6px;">来源页面 &nbsp;<span style="display:inline-block;padding:2px 8px;border-radius:2px;background:#e3ebfc;color:#215bdb;font-size:12px;font-weight:bold;">' . esc_html($kind) . '</span>' . ($entry !== '' ? ' &nbsp;<span style="font-size:12px;color:#475569;">入口：' . esc_html($entry) . '</span>' : '') . '</div><div style="font-size:14px;line-height:1.6;word-break:break-all;">' . $page_html . '</div></td></tr></table></td></tr>'
+        . $screen_block
         . $heading(esc_html($type['section'])) . '<tr><td style="padding:0 36px;">' . $product_html . '</td></tr>'
         . $heading('客户信息') . '<tr><td style="padding:0 36px;"><table width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #edf0f4;">' . implode('', $rows) . '</table></td></tr>'
         . $message_block
@@ -182,6 +192,8 @@ function achord_inquiry_admin_mail(array $fields, int $post_id): array
     $subject = (string) apply_filters('achord_inquiry_mail_subject', $type['subject'] . $email, $fields);
     if (($fields['suspect'] ?? '') !== '') {
         $subject = '【疑似垃圾】' . $subject;
+    } elseif ((int) ($fields['screen_stars'] ?? 0) > 0) {
+        $subject = '【' . achord_inquiry_stars_text((int) $fields['screen_stars']) . '】' . $subject;
     }
     return [$subject, $body];
 }
@@ -259,6 +271,10 @@ function achord_inquiry_dingtalk_message(int $post_id, array $fields): array
         $links[] = ['label' => '📋 后台查看', 'url' => admin_url('post.php?post=' . $post_id . '&action=edit')];
     }
     $title = $type['dingtalk_title'] !== '' ? $type['dingtalk_title'] : $config['dingtalk_emoji'] . ' ' . $config['site_label'] . '新询盘';
+    if ((int) ($fields['screen_stars'] ?? 0) > 0) {
+        $title .= ' ' . achord_inquiry_stars_text((int) $fields['screen_stars']);
+        array_unshift($meta, ['label' => 'AI 背调', 'icon' => '🔎', 'value' => trim(achord_inquiry_stars_text((int) $fields['screen_stars']) . ' ' . (string) ($fields['screen_summary'] ?? ''))]);
+    }
     if (($fields['suspect'] ?? '') !== '') {
         $title = '【疑似垃圾】' . $title;
         array_unshift($meta, ['label' => '疑似垃圾', 'icon' => '⚠️', 'value' => (string) $fields['suspect'] . '。已标无效、不计转化；是真客户请在后台点「恢复有效」']);

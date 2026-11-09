@@ -156,6 +156,10 @@ function achord_inquiry_set_invalid(int $post_id, string $reason): void
     $reason = trim(sanitize_text_field($reason));
     if ($reason === '') {
         delete_post_meta($post_id, '_invalid');
+        // An inquiry the screening stopped never reached sales: restoring it sends the email it missed, once.
+        if (get_post_meta($post_id, '_screen_verdict', true) === 'spam' && get_post_meta($post_id, '_mail_sent', true) === '') {
+            achord_inquiry_send_mail(array_diff_key(achord_inquiry_record($post_id), ['invalid' => 1, 'screen_verdict' => 1, 'screen_reason' => 1]), $post_id);
+        }
         return;
     }
     update_post_meta($post_id, '_invalid', wp_slash($reason));
@@ -204,6 +208,10 @@ function achord_inquiry_admin_labels(): array
         'ip' => 'IP 地址',
         'blocked' => '黑名单拦截',
         'invalid' => '已标无效',
+        'screen_stars' => '询盘优质度（星）',
+        'screen_summary' => 'AI 背调',
+        'screen_reason' => '判定原因',
+        'screened_by' => '判定方式',
     ];
     foreach (ACHORD_INQUIRY_ATTRIBUTION_LABELS as $name => $label) {
         $labels['attr_' . $name] = '广告来源 · ' . $label;
@@ -224,7 +232,7 @@ function achord_inquiry_meta_box(WP_Post $post): void
     echo '<p style="margin:0 0 12px;color:#646970">这是前台询盘表单生成的只读详情，不需要像文章一样编辑标题或正文。</p>';
     echo '<button type="button" class="button button-primary" style="margin:0 0 12px" onclick="navigator.clipboard && navigator.clipboard.writeText(this.dataset.copy);this.textContent=\'已复制客户信息\';" data-copy="' . esc_attr(implode("\n", $copy)) . '">复制客户信息</button>';
     echo '<table class="widefat striped"><tbody>';
-    $optional = ['blocked', 'invalid', 'lead_type', 'language', 'page_referrer'];
+    $optional = ['blocked', 'invalid', 'lead_type', 'language', 'page_referrer', 'screen_stars', 'screen_summary', 'screen_reason', 'screened_by'];
     foreach ($labels as $key => $label) {
         $value = (string) get_post_meta($post->ID, '_' . $key, true);
         // Ad attribution exists only for visitors who came from an ad and agreed to advertising cookies.
@@ -261,6 +269,10 @@ function achord_inquiry_column_content(string $column, int $post_id): void
             $invalid = $meta('invalid');
             if ($invalid !== '') {
                 echo '<span style="display:inline-block;margin:0 0 4px;padding:1px 6px;border:1px solid #b45309;border-radius:2px;color:#92400e;font-weight:600">无效 · ' . esc_html($invalid) . '</span><br>';
+            }
+            $stars = (int) $meta('screen_stars');
+            if ($stars > 0) {
+                echo '<span title="' . esc_attr($meta('screen_summary')) . '" style="color:#d97706;letter-spacing:1px">' . esc_html(achord_inquiry_stars_text($stars)) . '</span><br>';
             }
             $name = $meta('name');
             echo '<strong><a class="row-title" href="' . esc_url((string) get_edit_post_link($post_id)) . '">' . esc_html($name !== '' ? $name : get_the_title($post_id)) . '</a></strong>';

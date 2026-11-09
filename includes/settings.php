@@ -20,6 +20,8 @@ function achord_inquiry_sanitize_options($value): array
             'turnstile_enabled', 'turnstile_local_mode', 'store_ip', 'suspect_check' => in_array($given, ['1', 'true'], true) ? '1' : '0',
             'recipient' => is_email(sanitize_email($given)) ? sanitize_email($given) : '',
             'blocklist' => sanitize_textarea_field($given),
+            'ai_timeout' => (string) max(5, min(60, (int) $given ?: 20)),
+            'ai_base_url' => preg_match('#^https://#i', trim($given)) ? esc_url_raw(trim($given)) : '',
             default => sanitize_text_field($given),
         };
     }
@@ -36,7 +38,7 @@ add_action('init', static function (): void {
     }
     register_setting('achord_inquiry', ACHORD_INQUIRY_OPTION, [
         'type' => 'object',
-        'description' => '询盘设置：收件邮箱、Turnstile、黑名单、是否保存 IP、自动标记疑似垃圾',
+        'description' => '询盘设置：收件邮箱、Turnstile、黑名单、是否保存 IP、自动标记疑似垃圾、AI 判断',
         'default' => [],
         'sanitize_callback' => 'achord_inquiry_sanitize_options',
         'show_in_rest' => ['schema' => ['type' => 'object', 'properties' => $properties]],
@@ -78,6 +80,13 @@ function achord_inquiry_settings_page(): void
     echo '<tr><th scope="row">疑似垃圾</th><td>';
     $checkbox('suspect_check', '自动标记疑似垃圾询盘');
     echo '<p class="description">留言里有两句以上群发骗局的套话（索要目录和价目表、问「你是负责人吗」、约 Zoom/Teams 会议等）却一句没提设备本身，或者从机房/VPN 网络提交且没提设备的，照常存下并发邮件和钉钉，但标题前加【疑似垃圾】、自动标为无效、不算 GA4 和广告转化。是真客户的，在询盘列表点「恢复有效」。</p></td></tr>';
+
+    echo '<tr><th scope="row">AI 判断与背调</th><td>';
+    echo '<p><input class="regular-text" type="url" name="' . $name('ai_base_url') . '" value="' . esc_attr($options['ai_base_url']) . '" placeholder="Base URL，例如 https://api.openai.com/v1"></p>';
+    echo '<p><input class="regular-text" type="password" autocomplete="new-password" name="' . $name('ai_api_key') . '" value="' . esc_attr($options['ai_api_key']) . '" placeholder="API Key"></p>';
+    echo '<p><input class="small-text" type="number" min="5" max="60" name="' . $name('ai_timeout') . '" value="' . esc_attr($options['ai_timeout']) . '"> 秒内没答复就改用规则（访客提交时要等这么久，联网搜索的模型建议 20 秒左右）</p>';
+    echo '<p><input class="regular-text" type="text" name="' . $name('ai_model') . '" value="' . esc_attr($options['ai_model']) . '" placeholder="模型，例如 gpt-4o-mini"></p>';
+    echo '<p class="description">三项都填（OpenAI 兼容的 /chat/completions 接口，只认 https）才启用。每条询盘先由服务器查 IP 归属、邮箱域名官网和注册日期、来源渠道，再交给 AI 判断：垃圾询盘不发邮件、钉钉只推「拦截一条垃圾询盘，原因 …」、标无效、不算转化（误判点「恢复有效」会补发邮件）；正常询盘在邮件和钉钉里带 1–5 星优质度和一句背调。AI 出错或超时时改用上面的规则。不填就不调用 AI。</p></td></tr>';
 
     echo '<tr><th scope="row">保存 IP</th><td>';
     $checkbox('store_ip', '询盘保存访客 IP');

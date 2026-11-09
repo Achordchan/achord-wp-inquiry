@@ -168,19 +168,37 @@ function achord_inquiry_handle(): void
     }
     // A sender on the blocklist is saved as a blocked draft and told it went through: no mail, no DingTalk, no conversion.
     $block_reason = achord_inquiry_block_reason((string) $fields['email'], achord_inquiry_client_ip());
-    $post_id = achord_inquiry_save($fields, $block_reason);
+    if ($block_reason !== '') {
+        $post_id = achord_inquiry_save($fields, $block_reason);
+        if (is_wp_error($post_id)) {
+            achord_inquiry_fail('saveFailed', 'error', 500);
+        }
+        achord_inquiry_succeed(0);
+    }
+    // Screening (screen.php): the AI's verdict, stars and background note, or the rules when there is no AI.
+    $screen = achord_inquiry_screen($fields, achord_inquiry_client_ip());
+    $fields['screen_verdict'] = $screen['verdict'];
+    $fields['screen_reason'] = $screen['reason'];
+    $fields['screen_stars'] = $screen['stars'] > 0 ? (string) $screen['stars'] : '';
+    $fields['screen_summary'] = $screen['summary'];
+    $fields['screened_by'] = $screen['by'];
+    $post_id = achord_inquiry_save($fields);
     if (is_wp_error($post_id)) {
         achord_inquiry_fail('saveFailed', 'error', 500);
     }
-    if ($block_reason !== '') {
+    if ($screen['verdict'] === 'spam') {
+        // Stopped: marked invalid, no email, a one-line DingTalk notice, no conversion. 恢复有效 sends the email.
+        achord_inquiry_set_invalid((int) $post_id, '已拦截（' . $screen['by'] . '）：' . $screen['reason']);
+        if (function_exists('achord_dingtalk_dispatch') && apply_filters('achord_inquiry_send_dingtalk', true, $fields)) {
+            achord_dingtalk_dispatch(achord_inquiry_dingtalk_blocked_message((int) $post_id, $fields), (string) achord_inquiry_config()['dingtalk_source']);
+        }
         achord_inquiry_succeed(0);
     }
-    // Suspected spam (guard.php) still reaches sales, flagged, but is marked invalid and never counted as a conversion.
-    $suspect = achord_inquiry_suspect_check_enabled() ? achord_inquiry_suspect_reason($fields, achord_inquiry_client_ip()) : '';
-    if ($suspect !== '') {
-        achord_inquiry_set_invalid((int) $post_id, '自动判定疑似垃圾：' . $suspect);
-        $fields['suspect'] = $suspect;
+    if ($screen['verdict'] === 'suspect') {
+        // Suspected by the rules: still reaches sales, flagged, but marked invalid and never counted as a conversion.
+        achord_inquiry_set_invalid((int) $post_id, '自动判定疑似垃圾：' . $screen['reason']);
+        $fields['suspect'] = $screen['reason'];
     }
     achord_inquiry_notify((int) $post_id, $fields);
-    achord_inquiry_succeed($suspect !== '' ? 0 : (int) $post_id);
+    achord_inquiry_succeed($screen['verdict'] === 'suspect' ? 0 : (int) $post_id);
 }

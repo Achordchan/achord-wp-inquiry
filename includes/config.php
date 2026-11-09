@@ -76,6 +76,10 @@ function achord_inquiry_options(): array
         'blocklist' => '',
         'store_ip' => '0',
         'suspect_check' => '1',
+        'ai_base_url' => '',
+        'ai_api_key' => '',
+        'ai_model' => '',
+        'ai_timeout' => '20',
     ];
     $defaults = array_merge($defaults, array_intersect_key((array) apply_filters('achord_inquiry_default_options', $defaults), $defaults));
     $saved = get_option(ACHORD_INQUIRY_OPTION, null);
