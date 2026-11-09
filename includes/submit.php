@@ -23,6 +23,7 @@ function achord_inquiry_boot(): void
     add_action('admin_post_' . achord_inquiry_name('submit_inquiry'), 'achord_inquiry_handle');
     add_action('admin_post_nopriv_' . achord_inquiry_name('submit_inquiry'), 'achord_inquiry_handle');
     add_action('wp_enqueue_scripts', 'achord_inquiry_enqueue_script');
+    add_action('achord_inquiry_unscreened', 'achord_inquiry_handle_unscreened');
     do_action('achord_inquiry_booted');
 }
 
@@ -175,6 +176,14 @@ function achord_inquiry_handle(): void
         }
         achord_inquiry_succeed(0);
     }
+    // Saved before screening, so a request cut off while waiting for the AI loses nothing: a safety net 3 minutes on
+    // sends the notification of any inquiry the screening never finished (achord_inquiry_handle_unscreened()).
+    $post_id = achord_inquiry_save($fields);
+    if (is_wp_error($post_id)) {
+        achord_inquiry_fail('saveFailed', 'error', 500);
+    }
+    $post_id = (int) $post_id;
+    wp_schedule_single_event(time() + 180, 'achord_inquiry_unscreened', [$post_id]);
     // Screening (screen.php): the AI's verdict, stars and background note, or the rules when there is no AI.
     $screen = achord_inquiry_screen($fields, achord_inquiry_client_ip());
     $fields['screen_verdict'] = $screen['verdict'];
@@ -182,10 +191,12 @@ function achord_inquiry_handle(): void
     $fields['screen_stars'] = $screen['stars'] > 0 ? (string) $screen['stars'] : '';
     $fields['screen_summary'] = $screen['summary'];
     $fields['screened_by'] = $screen['by'];
-    $post_id = achord_inquiry_save($fields);
-    if (is_wp_error($post_id)) {
-        achord_inquiry_fail('saveFailed', 'error', 500);
+    foreach (['screen_verdict', 'screen_reason', 'screen_stars', 'screen_summary', 'screened_by'] as $key) {
+        if ($fields[$key] !== '') {
+            update_post_meta($post_id, '_' . $key, wp_slash($fields[$key]));
+        }
     }
+    wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
     if ($screen['verdict'] === 'spam') {
         // Stopped: marked invalid, no email, a one-line DingTalk notice, no conversion. 恢复有效 sends the email.
         achord_inquiry_set_invalid((int) $post_id, '已拦截（' . $screen['by'] . '）：' . $screen['reason']);
@@ -201,4 +212,21 @@ function achord_inquiry_handle(): void
     }
     achord_inquiry_notify((int) $post_id, $fields);
     achord_inquiry_succeed($screen['verdict'] === 'suspect' ? 0 : (int) $post_id);
+}
+
+/**
+ * The safety net: an inquiry whose screening never finished (the request was cut off waiting for the AI) is told to
+ * sales as an ordinary inquiry, once, unless it was already notified or stopped.
+ */
+function achord_inquiry_handle_unscreened($post_id): void
+{
+    $post_id = (int) $post_id;
+    if ($post_id <= 0 || get_post_meta($post_id, '_screen_verdict', true) !== '' || get_post_meta($post_id, '_mail_sent', true) !== '') {
+        return;
+    }
+    $fields = achord_inquiry_record($post_id);
+    $fields['screened_by'] = '未完成（提交请求中途断开，按普通询盘补发）';
+    update_post_meta($post_id, '_screen_verdict', 'unfinished');
+    update_post_meta($post_id, '_screened_by', wp_slash($fields['screened_by']));
+    achord_inquiry_notify($post_id, $fields);
 }

@@ -84,7 +84,7 @@ function achord_inquiry_settings_page(): void
     echo '<tr><th scope="row">AI 判断与背调</th><td>';
     echo '<p><input class="regular-text" type="url" name="' . $name('ai_base_url') . '" value="' . esc_attr($options['ai_base_url']) . '" placeholder="Base URL，例如 https://api.openai.com/v1"></p>';
     echo '<p><input class="regular-text" type="password" autocomplete="new-password" name="' . $name('ai_api_key') . '" value="' . esc_attr($options['ai_api_key']) . '" placeholder="API Key"></p>';
-    echo '<p><input class="small-text" type="number" min="5" max="60" name="' . $name('ai_timeout') . '" value="' . esc_attr($options['ai_timeout']) . '"> 秒内没答复就改用规则（访客提交时要等这么久，联网搜索的模型建议 20 秒左右）</p>';
+    echo '<p><input class="small-text" type="number" min="5" max="60" name="' . $name('ai_timeout') . '" value="' . esc_attr($options['ai_timeout']) . '"> 秒内没答复就改用规则（访客提交时要等这么久，联网搜索的模型建议 20 秒左右；连同查 IP、域名在内整个判断最多 25 秒）</p>';
     echo '<p><input class="regular-text" type="text" name="' . $name('ai_model') . '" value="' . esc_attr($options['ai_model']) . '" placeholder="模型，例如 gpt-4o-mini"></p>';
     echo '<p class="description">三项都填（OpenAI 兼容的 /chat/completions 接口，只认 https）才启用。每条询盘先由服务器查 IP 归属、邮箱域名官网和注册日期、来源渠道，再交给 AI 判断：垃圾询盘不发邮件、钉钉只推「拦截一条垃圾询盘，原因 …」、标无效、不算转化（误判点「恢复有效」会补发邮件）；正常询盘在邮件和钉钉里带 1–5 星优质度和一句背调。AI 出错或超时时改用上面的规则。不填就不调用 AI。</p></td></tr>';
 

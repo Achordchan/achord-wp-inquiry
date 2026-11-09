@@ -71,6 +71,8 @@ function current_time($f) { return gmdate($f, 1767225600); }
 function get_transient($k) { return $GLOBALS['transients'][$k] ?? false; }
 function set_transient($k, $v, $t = 0) { $GLOBALS['transients'][$k] = $v; return true; }
 function wp_remote_get($u, $a = []) { $GLOBALS['gets'][] = $u; return ['code' => 200, 'body' => 'CA']; }
+function wp_schedule_single_event($t, $h, $a = []) { $GLOBALS['scheduled'][$h . json_encode($a)] = $t; return true; }
+function wp_clear_scheduled_hook($h, $a = []) { unset($GLOBALS['scheduled'][$h . json_encode($a)]); return 1; }
 function wp_safe_remote_get($u, $a = []) { $GLOBALS['safe_gets'][] = $u; return wp_remote_get($u, $a); }
 function wp_remote_post($u, $a = []) {
     if (str_contains($u, '/chat/completions')) {
@@ -422,6 +424,18 @@ check(achord_inquiry_ai_assess(['message' => 'x'], [])['spam'] === false, 'spam 
 $GLOBALS['safe_gets'] = [];
 achord_inquiry_domain_facts('safe-check.test');
 check(count($GLOBALS['safe_gets']) === 2, '查客户域名官网和 RDAP 都走 wp_safe_remote_get（防 SSRF）');
+check(empty($GLOBALS['scheduled']), '判断做完就撤掉兜底定时任务');
+// 兜底：先存后判；请求中途断开时，3 分钟后补发通知。
+$GLOBALS['mails'] = [];
+$GLOBALS['meta'][701] = ['_name' => 'Cut', '_email' => 'cut@client.test', '_message' => 'Need 5 ton crane'];
+achord_inquiry_handle_unscreened(701);
+check(count($GLOBALS['mails']) === 1 && ($GLOBALS['meta'][701]['_screen_verdict'] ?? '') === 'unfinished', '判断没做完的询盘：兜底补发通知');
+achord_inquiry_handle_unscreened(701);
+check(count($GLOBALS['mails']) === 1, '兜底只补发一次');
+$GLOBALS['ai_requests'] = [];
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'stars' => 3, 'summary' => 's']);
+achord_inquiry_ai_assess(['message' => 'x'], [], 7);
+check(($GLOBALS['ai_requests'][0]['args']['timeout'] ?? 0) === 7, 'AI 等待时间不超过剩下的预算');
 check(achord_inquiry_sanitize_options(['ai_base_url' => 'http://insecure.test'])['ai_base_url'] === '', 'Base URL 只认 https');
 check(achord_inquiry_sanitize_options(['ai_timeout' => '999'])['ai_timeout'] === '60', '超时最多 60 秒');
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['ai_api_key'] = '';

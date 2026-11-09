@@ -81,7 +81,7 @@ function achord_inquiry_domain_facts(string $domain): array
         return $cached;
     }
     // wp_safe_remote_get(): the domain is the visitor's to choose, so the address and every redirect must be public.
-    $page = wp_safe_remote_get('https://' . $domain . '/', ['timeout' => 4, 'redirection' => 3, 'limit_response_size' => 200000]);
+    $page = wp_safe_remote_get('https://' . $domain . '/', ['timeout' => 3, 'redirection' => 3, 'limit_response_size' => 200000]);
     if (!is_wp_error($page)) {
         $code = (int) wp_remote_retrieve_response_code($page);
         if (preg_match('#<title[^>]*>(.*?)</title>#is', (string) wp_remote_retrieve_body($page), $match)) {
@@ -90,7 +90,7 @@ function achord_inquiry_domain_facts(string $domain): array
         $facts['website'] = $facts['website'] !== '' ? $facts['website'] : ($code > 0 ? '有网站但没有标题（HTTP ' . $code . '）' : '');
     }
     $facts['website'] = $facts['website'] !== '' ? $facts['website'] : '打不开';
-    $rdap = wp_safe_remote_get('https://rdap.org/domain/' . rawurlencode($domain), ['timeout' => 4, 'redirection' => 3]);
+    $rdap = wp_safe_remote_get('https://rdap.org/domain/' . rawurlencode($domain), ['timeout' => 3, 'redirection' => 3]);
     if (!is_wp_error($rdap) && (int) wp_remote_retrieve_response_code($rdap) === 200) {
         $data = json_decode((string) wp_remote_retrieve_body($rdap), true);
         foreach ((array) ($data['events'] ?? []) as $event) {
@@ -158,7 +158,7 @@ function achord_inquiry_ai_prompt(): string
 }
 
 /** Ask the model; null when it is not set up, fails, or answers out of shape. */
-function achord_inquiry_ai_assess(array $fields, array $facts): ?array
+function achord_inquiry_ai_assess(array $fields, array $facts, int $max_seconds = 60): ?array
 {
     $config = achord_inquiry_ai_config();
     if ($config === null) {
@@ -172,7 +172,7 @@ function achord_inquiry_ai_assess(array $fields, array $facts): ?array
     }
     $user = "询盘（客户填写）：\n" . wp_json_encode($inquiry, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "\n\n服务器查到的事实：\n" . wp_json_encode($facts, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     $response = wp_remote_post($config['url'], [
-        'timeout' => max(5, min(60, (int) achord_inquiry_options()['ai_timeout'] ?: 20)),
+        'timeout' => max(1, min($max_seconds, 60, (int) achord_inquiry_options()['ai_timeout'] ?: 20)),
         'headers' => ['Authorization' => 'Bearer ' . $config['key'], 'Content-Type' => 'application/json'],
         'body' => wp_json_encode([
             'model' => $config['model'],
@@ -216,7 +216,12 @@ function achord_inquiry_screen(array $fields, string $ip): array
 {
     $ai_set = achord_inquiry_ai_config() !== null;
     if ($ai_set) {
-        $answer = achord_inquiry_ai_assess($fields, achord_inquiry_screen_facts($fields, $ip));
+        // One budget for the whole screening (lookups and AI), well inside a host's request limit; the AI gets what the
+        // lookups leave, and none at all when fewer than 5 seconds are left.
+        $started = microtime(true);
+        $facts = achord_inquiry_screen_facts($fields, $ip);
+        $left = (int) floor((float) apply_filters('achord_inquiry_screen_budget', 25) - (microtime(true) - $started));
+        $answer = $left >= 5 ? achord_inquiry_ai_assess($fields, $facts, $left) : null;
         if ($answer !== null) {
             return ['verdict' => $answer['spam'] ? 'spam' : 'ok'] + $answer;
         }
