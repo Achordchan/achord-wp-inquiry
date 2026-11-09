@@ -71,6 +71,8 @@ function current_time($f) { return gmdate($f, 1767225600); }
 function get_transient($k) { return $GLOBALS['transients'][$k] ?? false; }
 function set_transient($k, $v, $t = 0) { $GLOBALS['transients'][$k] = $v; return true; }
 function wp_remote_get($u, $a = []) { $GLOBALS['gets'][] = $u; return ['code' => 200, 'body' => 'CA']; }
+function get_post_status($id) { return $GLOBALS['post_status'][$id] ?? 'publish'; }
+function get_post_type($id) { return $GLOBALS['post_type'][$id] ?? 'inquiry'; }
 function wp_schedule_single_event($t, $h, $a = []) { $GLOBALS['scheduled'][$h . json_encode($a)] = $t; return true; }
 function wp_clear_scheduled_hook($h, $a = []) { unset($GLOBALS['scheduled'][$h . json_encode($a)]); return 1; }
 function wp_safe_remote_get($u, $a = []) { $GLOBALS['safe_gets'][] = $u; return wp_remote_get($u, $a); }
@@ -441,6 +443,16 @@ check(!$GLOBALS['mails'] && count($GLOBALS['dingtalk']) === 1 && str_contains((s
 $GLOBALS['meta'][703] = ['_name' => 'Ok', '_email' => 'ok@client.test', '_message' => 'Need 5 ton crane', '_screen_verdict' => 'ok', '_screen_stars' => '4'];
 achord_inquiry_handle_unscreened(703);
 check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【★★★★☆】'), '判定后断开：兜底补发带星邮件');
+$GLOBALS['mails'] = [];
+$GLOBALS['meta'][704] = ['_name' => 'Trashed', '_email' => 't@client.test'];
+$GLOBALS['post_status'][704] = 'trash';
+achord_inquiry_handle_unscreened(704);
+$GLOBALS['meta'][705] = ['_name' => 'Marked', '_email' => 'm@client.test', '_invalid' => '后台人工标记'];
+achord_inquiry_handle_unscreened(705);
+$GLOBALS['meta'][706] = ['_name' => 'Other', '_email' => 'o@client.test'];
+$GLOBALS['post_type'][706] = 'post';
+achord_inquiry_handle_unscreened(706);
+check(!$GLOBALS['mails'], '兜底不补发：已进回收站、已被人工标无效、不是询盘');
 $GLOBALS['gets'] = [];
 $short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
 check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');

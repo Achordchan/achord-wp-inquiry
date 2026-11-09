@@ -239,6 +239,16 @@ function achord_inquiry_handle_unscreened($post_id): void
     if ($post_id <= 0 || get_post_meta($post_id, '_screen_done', true) === '1') {
         return;
     }
+    // Deleted, trashed or not an inquiry: nothing to send.
+    $status = get_post_status($post_id);
+    if ($status === false || $status === 'trash' || get_post_type($post_id) !== achord_inquiry_post_type()) {
+        return;
+    }
+    // An administrator marked it invalid meanwhile: their call stands, nothing is sent.
+    if (get_post_meta($post_id, '_invalid', true) !== '' && get_post_meta($post_id, '_screen_verdict', true) !== 'spam') {
+        update_post_meta($post_id, '_screen_done', '1');
+        return;
+    }
     // A verdict already saved is carried out as it stands; without one, the inquiry goes to sales as an ordinary one.
     $fields = achord_inquiry_record($post_id);
     if (($fields['screen_verdict'] ?? '') === '') {
