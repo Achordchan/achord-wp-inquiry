@@ -454,7 +454,7 @@ check(count($GLOBALS['safe_gets']) === 2, '查客户域名官网和 RDAP 都走 
 check(empty($GLOBALS['scheduled']), '判断做完就撤掉兜底定时任务');
 // 兜底：先存后判；请求中途断开时，3 分钟后补发通知。
 $GLOBALS['mails'] = [];
-$GLOBALS['meta'][701] = ['_name' => 'Cut', '_email' => 'cut@client.test', '_message' => 'Need 5 ton crane', '_screen_started' => '1'];
+$GLOBALS['meta'][701] = ['_name' => 'Cut', '_email' => 'cut@client.test', '_message' => 'Need 5 ton crane', '_screen_started' => (string) (time() - 200)];
 achord_inquiry_screen_saved(701);
 check(count($GLOBALS['mails']) === 1 && ($GLOBALS['meta'][701]['_screen_verdict'] ?? '') === 'unfinished', '后台判断中途断开的询盘：兜底按普通询盘补发');
 achord_inquiry_screen_saved(701);
@@ -565,6 +565,11 @@ achord_inquiry_screen_saved(717);
 $GLOBALS['meta'][718] = ['_name' => 'M', '_email' => 'm@client.test', '_screen_ip' => '192.0.2.7', '_invalid' => '后台人工标记'];
 achord_inquiry_finish_screened(718, ['screen_verdict' => 'ok']);
 check(!isset($GLOBALS['meta'][716]['_screen_ip']) && !isset($GLOBALS['meta'][717]['_screen_ip']) && !isset($GLOBALS['meta'][718]['_screen_ip']), '回收站、已完成、人工处理过的询盘都删掉临时 IP');
+// 另一次判断还在时限内：不当成断开，一分钟后再看。
+$GLOBALS['mails'] = []; $GLOBALS['scheduled'] = [];
+$GLOBALS['meta'][719] = ['_name' => 'Run', '_email' => 'run@client.test', '_screen_started' => (string) (time() - 30)];
+achord_inquiry_screen_saved(719);
+check(!$GLOBALS['mails'] && ($GLOBALS['meta'][719]['_screen_done'] ?? '') === '' && isset($GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([719])]), '判断进行中：不补发，稍后再看');
 $GLOBALS['gets'] = [];
 $short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
 check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');

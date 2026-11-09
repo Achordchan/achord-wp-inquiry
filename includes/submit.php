@@ -270,9 +270,15 @@ function achord_inquiry_screen_saved($post_id): void
     achord_inquiry_ip_override($ip);
     try {
         if (($fields['screen_verdict'] ?? '') === '') {
-            if (get_post_meta($post_id, '_screen_started', true) !== '') {
+            $started = (int) get_post_meta($post_id, '_screen_started', true);
+            // Another run is still within its time (budget 90 s plus lookups and margin): leave it, look again later.
+            if ($started > 0 && time() - $started < 150) {
+                wp_schedule_single_event(time() + 60, 'achord_inquiry_unscreened', [$post_id]);
+                return;
+            }
+            if ($started > 0) {
                 $fields['screen_verdict'] = 'unfinished';
-                $fields['screened_by'] = '未完成（后台判断中途断开，按普通询盘补发）';
+                $fields['screened_by'] = '未完成（后台判断超时或中途断开，按普通询盘补发）';
                 update_post_meta($post_id, '_screen_verdict', 'unfinished');
                 update_post_meta($post_id, '_screened_by', wp_slash($fields['screened_by']));
             } else {
