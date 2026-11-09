@@ -267,8 +267,8 @@ function achord_inquiry_suspect_reason(array $fields, string $ip): string
 /**
  * A per-inquiry lock in the options table, so finishing the screening (submission or safety net) and an administrator's
  * mark/restore never act on the same inquiry at once. INSERT IGNORE is atomic; a lock left by a crashed request expires
- * after 60 seconds. Waits up to $wait seconds; if it still cannot get the lock it goes ahead rather than lose a
- * notification (returns false then). Re-entrant within one request.
+ * after 5 minutes. Waits up to $wait seconds and returns false if it still cannot get the lock: the caller must not touch
+ * the inquiry then (the screening leaves it to the safety net, an administrator is asked to try again). Re-entrant.
  */
 function achord_inquiry_lock(int $post_id, float $wait = 15.0): bool
 {
@@ -279,10 +279,11 @@ function achord_inquiry_lock(int $post_id, float $wait = 15.0): bool
         return true;
     }
     $name = '_achord_inquiry_lock_' . $post_id;
+    $wait = (float) apply_filters('achord_inquiry_lock_wait', $wait, $post_id);
     $until = microtime(true) + $wait;
     do {
         $wpdb->query($wpdb->prepare("DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value + 0 < %d", $name, time()));
-        if ((int) $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, (string) (time() + 60))) === 1) {
+        if ((int) $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, (string) (time() + 300))) === 1) {
             $held[$post_id] = 1;
             return true;
         }

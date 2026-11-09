@@ -103,6 +103,26 @@ if (class_exists('WP_REST_Posts_Controller')) {
             return parent::update_item_permissions_check($request);
         }
 
+        /**
+         * The flag goes through achord_inquiry_set_invalid() rather than a plain meta write, so a connector's mark or
+         * restore counts as the administrator's call (clears _invalid_auto, finishes the screening, sends a missed
+         * email) and waits for a screening in progress.
+         */
+        public function update_item($request)
+        {
+            $post = get_post((int) $request['id']);
+            if (!$post instanceof WP_Post || $post->post_type !== $this->post_type) {
+                return achord_inquiry_rest_error('rest_post_invalid_id', 'Invalid inquiry ID.', 404);
+            }
+            $params = array_merge((array) $request->get_query_params(), (array) $request->get_body_params(), (array) $request->get_json_params());
+            $value = (string) (((array) ($params['meta'] ?? []))[achord_inquiry_invalid_rest_name()] ?? '');
+            if (!achord_inquiry_set_invalid((int) $post->ID, $value)) {
+                return achord_inquiry_rest_error('achord_inquiry_busy', 'This inquiry is being processed (notifications are going out); try again shortly.', 409);
+            }
+            $request->set_param('context', 'edit');
+            return rest_ensure_response($this->prepare_item_for_response(get_post((int) $post->ID), $request));
+        }
+
         public function delete_item_permissions_check($request)
         {
             return achord_inquiry_rest_error('achord_inquiry_read_only', 'Inquiries are read-only here; manage them in wp-admin.', 403);
@@ -152,15 +172,19 @@ function achord_inquiry_rest_update_refused_params($request, array $writable): a
  * tells reports and the list that it is not a real lead. $auto is the screening's own mark (_invalid_auto), which the
  * safety net may finish; a mark or restore from the list or the connector is the administrator's call and stands.
  */
-function achord_inquiry_set_invalid(int $post_id, string $reason, bool $auto = false): void
+function achord_inquiry_set_invalid(int $post_id, string $reason, bool $auto = false): bool
 {
-    // The screening calls this holding the lock already (re-entrant); an administrator waits for a running screening.
-    achord_inquiry_lock($post_id);
+    // The screening calls this holding the lock already (re-entrant); an administrator waits for a running screening,
+    // and is told to try again (false) rather than act alongside it.
+    if (!achord_inquiry_lock($post_id)) {
+        return false;
+    }
     try {
         achord_inquiry_set_invalid_locked($post_id, $reason, $auto);
     } finally {
         achord_inquiry_unlock($post_id);
     }
+    return true;
 }
 
 function achord_inquiry_set_invalid_locked(int $post_id, string $reason, bool $auto): void
@@ -388,7 +412,9 @@ function achord_inquiry_store_hooks(): void
             wp_die('无权操作这条询盘。', 403);
         }
         check_admin_referer('achord_inquiry_invalid_' . $post_id);
-        achord_inquiry_set_invalid($post_id, ($_GET['mark'] ?? '') === '1' ? '后台人工标记' : '');
+        if (!achord_inquiry_set_invalid($post_id, ($_GET['mark'] ?? '') === '1' ? '后台人工标记' : '')) {
+            wp_die('这条询盘正在发通知，请过一会儿再试。', '请稍后再试', ['response' => 409, 'back_link' => true]);
+        }
         wp_safe_redirect(wp_get_referer() ?: admin_url('edit.php?post_type=' . $type));
         exit;
     });

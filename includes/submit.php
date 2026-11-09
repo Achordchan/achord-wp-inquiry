@@ -197,20 +197,23 @@ function achord_inquiry_handle(): void
         }
     }
     $answer = achord_inquiry_finish_screened($post_id, $fields);
-    achord_inquiry_succeed($answer);
+    achord_inquiry_succeed($answer ?? 0);
 }
 
 /**
  * What the verdict asks for, then marks the inquiry done (_screen_done) and lifts the safety net; returns the id the
- * thank-you page may carry (0 for spam and suspect, so no conversion). Spam: marked invalid, a one-line DingTalk notice,
- * no email (恢复有效 sends it). Suspect: marked invalid, sent flagged. Otherwise sent with its stars.
+ * thank-you page may carry (0 for spam and suspect, so no conversion; null when another request holds the inquiry, which
+ * is then left to the safety net). Spam: marked invalid, a one-line DingTalk notice, no email (恢复有效 sends it). Suspect: marked invalid, sent flagged. Otherwise sent with its stars.
  */
-function achord_inquiry_finish_screened(int $post_id, array $fields): int
+function achord_inquiry_finish_screened(int $post_id, array $fields): ?int
 {
     // An administrator may have marked or restored it while the AI was still thinking (or before the safety net ran):
     // restoring finishes the screening (_screen_done), a manual invalid mark has no _invalid_auto. Their call stands.
     // Under the inquiry's lock, so a restore or mark from the list cannot slip in between the check and the actions.
-    achord_inquiry_lock($post_id);
+    // Without the lock nothing is touched: null, and the safety net (still scheduled) finishes it later.
+    if (!achord_inquiry_lock($post_id)) {
+        return null;
+    }
     try {
         return achord_inquiry_finish_screened_locked($post_id, $fields);
     } finally {
@@ -290,7 +293,10 @@ function achord_inquiry_handle_unscreened($post_id): void
     // Sent from WP-Cron: the sender's saved IP (or none) stands in for the cron request's own address.
     achord_inquiry_ip_override((string) ($fields['ip'] ?? ''));
     try {
-        achord_inquiry_finish_screened($post_id, $fields);
+        // Busy (an administrator's restore, say): try again in a minute.
+        if (achord_inquiry_finish_screened($post_id, $fields) === null) {
+            wp_schedule_single_event(time() + 60, 'achord_inquiry_unscreened', [$post_id]);
+        }
     } finally {
         achord_inquiry_ip_override(null, true);
     }

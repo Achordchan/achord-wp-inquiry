@@ -512,6 +512,16 @@ $GLOBALS['wpdb']->locks['_achord_inquiry_lock_714'] = time() - 1;
 check(achord_inquiry_lock(714, 0.0) === true && achord_inquiry_lock(714, 0.0) === true, '过期的锁可以接手；同一请求内可重入');
 achord_inquiry_unlock(714); achord_inquiry_unlock(714);
 check(!$GLOBALS['wpdb']->locks, '重入的锁全部放掉才删');
+// 锁被别的请求占着（比如正在发邮件）：人工标记返回失败、不动数据；收尾什么都不做，兜底一分钟后重试。
+$GLOBALS['mails'] = []; $GLOBALS['scheduled'] = [];
+$GLOBALS['meta'][715] = ['_name' => 'Busy', '_email' => 'busy@client.test', '_message' => 'x', '_screen_verdict' => 'spam', '_invalid' => 'x', '_invalid_auto' => '1'];
+$GLOBALS['wpdb']->locks['_achord_inquiry_lock_715'] = time() + 300;
+$GLOBALS['filters']['achord_inquiry_lock_wait'] = fn() => 0.0;
+check(achord_inquiry_set_invalid(715, '') === false && $GLOBALS['meta'][715]['_invalid'] === 'x' && !$GLOBALS['mails'], '锁被占：恢复有效不执行，提示稍后再试');
+check(achord_inquiry_finish_screened(715, ['screen_verdict' => 'ok', 'name' => 'Busy', 'email' => 'busy@client.test']) === null && !$GLOBALS['mails'], '锁被占：收尾不动');
+achord_inquiry_handle_unscreened(715);
+check(!$GLOBALS['mails'] && isset($GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([715])]), '锁被占：兜底一分钟后再试');
+unset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_715'], $GLOBALS['filters']['achord_inquiry_lock_wait']);
 $GLOBALS['gets'] = [];
 $short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
 check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');
