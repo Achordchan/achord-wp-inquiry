@@ -4,6 +4,7 @@
 define('ABSPATH', __DIR__);
 define('WEEK_IN_SECONDS', 604800);
 define('HOUR_IN_SECONDS', 3600);
+define('DAY_IN_SECONDS', 86400);
 
 $GLOBALS['options'] = [];
 $GLOBALS['filters'] = [];
@@ -48,6 +49,9 @@ function home_url($p = '') { return 'https://example.com' . $p; }
 function admin_url($p = '') { return 'https://example.com/wp-admin/' . $p; }
 function untrailingslashit($s) { return rtrim($s, '/'); }
 function sanitize_text_field($s) { return trim(preg_replace('/\s+/', ' ', strip_tags((string) $s))); }
+function wp_json_encode($v, $f = 0) { return json_encode($v, $f); }
+function get_posts($a = []) { return $GLOBALS['posts'] ?? []; }
+function get_the_title($p = 0) { return is_object($p) ? $p->post_title : ''; }
 function sanitize_textarea_field($s) { return trim(strip_tags((string) $s)); }
 function sanitize_email($s) { return filter_var(trim((string) $s), FILTER_VALIDATE_EMAIL) ?: ''; }
 function sanitize_key($s) { return preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $s)); }
@@ -67,7 +71,18 @@ function current_time($f) { return gmdate($f, 1767225600); }
 function get_transient($k) { return $GLOBALS['transients'][$k] ?? false; }
 function set_transient($k, $v, $t = 0) { $GLOBALS['transients'][$k] = $v; return true; }
 function wp_remote_get($u, $a = []) { $GLOBALS['gets'][] = $u; return ['code' => 200, 'body' => 'CA']; }
-function wp_remote_post($u, $a = []) { return ['code' => 200, 'body' => '{"success":true}']; }
+function get_post_status($id) { return $GLOBALS['post_status'][$id] ?? 'publish'; }
+function get_post_type($id) { return $GLOBALS['post_type'][$id] ?? 'inquiry'; }
+function wp_schedule_single_event($t, $h, $a = []) { $GLOBALS['scheduled'][$h . json_encode($a)] = $t; return true; }
+function wp_clear_scheduled_hook($h, $a = []) { unset($GLOBALS['scheduled'][$h . json_encode($a)]); return 1; }
+function wp_safe_remote_get($u, $a = []) { $GLOBALS['safe_gets'][] = $u; return wp_remote_get($u, $a); }
+function wp_remote_post($u, $a = []) {
+    if (str_contains($u, '/chat/completions')) {
+        $GLOBALS['ai_requests'][] = ['url' => $u, 'args' => $a];
+        return $GLOBALS['ai_reply'] ?? new WP_Error('timeout', 'timed out');
+    }
+    return ['code' => 200, 'body' => '{"success":true}'];
+}
 function wp_remote_retrieve_body($r) { return $r['body']; }
 function wp_remote_retrieve_response_code($r) { return $r['code']; }
 function is_wp_error($v) { return $v instanceof WP_Error; }
@@ -81,6 +96,7 @@ function wp_insert_post($a, $e = false) { $a['post_title'] = stripslashes($a['po
 // 和 WordPress 一样，存之前先 unslash。
 function update_post_meta($id, $k, $v) { $GLOBALS['meta'][$id][$k] = stripslashes((string) $v); return true; }
 function get_post_meta($id, $k = '', $single = false) { return $k === '' ? array_map(fn($v) => [$v], $GLOBALS['meta'][$id] ?? []) : ($GLOBALS['meta'][$id][$k] ?? ''); }
+function wp_cache_delete($k, $g = '') { $GLOBALS['cache_deletes'][] = [$k, $g]; return true; }
 function wp_mail($to, $subject, $body, $headers = []) { $GLOBALS['mails'][] = compact('to', 'subject', 'body', 'headers'); return true; }
 function achord_dingtalk_dispatch($message, $source) { $GLOBALS['dingtalk'][] = [$message, $source]; }
 
@@ -88,11 +104,26 @@ class FakeWpdb
 {
     public string $options = 'wp_options';
     public array $rows = [];
+    public array $locks = [];
     public function prepare($sql, ...$args) { return [$sql, $args]; }
     public function esc_like($s) { return $s; }
     public function query($q)
     {
         [$sql, $args] = $q;
+        if (str_starts_with($sql, 'INSERT IGNORE') && count($args) === 2) {
+            if (isset($this->locks[$args[0]])) {
+                return 0;
+            }
+            $this->locks[$args[0]] = (int) $args[1];
+            return 1;
+        }
+        if (str_starts_with($sql, 'DELETE') && str_contains($sql, 'option_name = %s')) {
+            if (isset($this->locks[$args[0]]) && (count($args) === 1 || $this->locks[$args[0]] < $args[1])) {
+                unset($this->locks[$args[0]]);
+                return 1;
+            }
+            return 0;
+        }
         if (str_starts_with($sql, 'INSERT IGNORE')) {
             $this->rows[$args[0]] ??= 0;
             return 1;
@@ -113,9 +144,11 @@ require dirname(__DIR__) . '/includes/config.php';
 require dirname(__DIR__) . '/includes/context.php';
 require dirname(__DIR__) . '/includes/network.php';
 require dirname(__DIR__) . '/includes/guard.php';
+require dirname(__DIR__) . '/includes/screen.php';
 require dirname(__DIR__) . '/includes/store.php';
 require dirname(__DIR__) . '/includes/notify.php';
 require dirname(__DIR__) . '/includes/submit.php';
+require dirname(__DIR__) . '/includes/settings.php';
 
 $failures = 0;
 function check(bool $ok, string $what): void
@@ -353,6 +386,153 @@ $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['suspect_check'] = '0';
 $r = submit(['name' => 'Yaron', 'email' => 'yaron@scam.test', 'message' => $spam['Yaron']]);
 check($r->success && $r->data['id'] > 0, '关掉自动标记：照旧算正常询盘');
 unset($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['suspect_check']);
+
+
+// AI 判断：设置三项后每条询盘先问 AI。
+$ai_answer = fn(array $json, string $wrap = '%s') => ['code' => 200, 'body' => json_encode(['choices' => [['message' => ['content' => sprintf($wrap, json_encode($json, JSON_UNESCAPED_UNICODE))]]]])];
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = array_merge($GLOBALS['options'][ACHORD_INQUIRY_OPTION] ?? [], ['ai_base_url' => 'https://ai.example.test/v1/', 'ai_api_key' => 'sk-test', 'ai_model' => 'm1']);
+check(achord_inquiry_ai_config()['url'] === 'https://ai.example.test/v1/chat/completions', 'Base URL 自动补 /chat/completions');
+$_SERVER['REMOTE_ADDR'] = '192.0.2.81';
+
+// 垃圾：不发邮件，钉钉只推一行拦截，标无效，不计转化。
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = []; $GLOBALS['ai_requests'] = [];
+$GLOBALS['posts'] = [(object) ['post_title' => '5 Ton Knuckle Boom Crane SQ5ZA3'], (object) ['post_title' => 'Truck Tail Lift']];
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => true, 'reason' => '冒充 Sonae 采购的群发钓鱼', 'stars' => 0, 'summary' => '']);
+$r = submit(['name' => 'Duarte', 'email' => 'duarte@teixeirasonae.test', 'message' => $spam['Duarte']]);
+$sid = count($GLOBALS['inserted']) + 100;
+$req = $GLOBALS['ai_requests'][0] ?? [];
+$sent_body = json_decode($req['args']['body'] ?? '{}', true);
+check(($req['args']['headers']['Authorization'] ?? '') === 'Bearer sk-test' && ($sent_body['model'] ?? '') === 'm1', 'AI 请求带密钥和模型');
+check(str_contains($sent_body['messages'][1]['content'] ?? '', 'teixeirasonae.test') && str_contains($sent_body['messages'][1]['content'] ?? '', '公司域名'), 'AI 收到询盘和服务器查到的事实');
+check(str_contains($sent_body['messages'][0]['content'] ?? '', '联网'), '提示词让能联网的模型去核实');
+check(str_contains($sent_body['messages'][0]['content'] ?? '', 'Truck Tail Lift'), '提示词带上本站产品清单');
+check($r->success && $r->data['id'] === 0 && !str_contains($r->data['redirect'], 'sent='), 'AI 垃圾：不给 ?sent=，不计转化');
+check(!$GLOBALS['mails'], 'AI 垃圾：不发邮件');
+check(count($GLOBALS['dingtalk']) === 1 && str_contains($GLOBALS['dingtalk'][0][0]['title'], '拦截一条垃圾询盘') && str_contains($GLOBALS['dingtalk'][0][0]['headline'], '冒充 Sonae'), 'AI 垃圾：钉钉推「拦截一条垃圾询盘，原因」');
+check(str_contains((string) ($GLOBALS['meta'][$sid]['_invalid'] ?? ''), '冒充 Sonae') && ($GLOBALS['meta'][$sid]['_screen_verdict'] ?? '') === 'spam', 'AI 垃圾：标无效，记下判定');
+achord_inquiry_set_invalid($sid, '');
+check(count($GLOBALS['mails']) === 1 && ($GLOBALS['meta'][$sid]['_mail_sent'] ?? '') === '1', '误判点恢复有效：补发邮件');
+achord_inquiry_set_invalid($sid, 'x'); achord_inquiry_set_invalid($sid, '');
+check(count($GLOBALS['mails']) === 1, '补发邮件只发一次');
+
+// 正常：带星级和背调，照常计转化。
+$_SERVER['REMOTE_ADDR'] = '192.0.2.82';
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'reason' => '', 'stars' => 4, 'summary' => '南非物流公司，要 2 台尾板装 JAC X200'], "```json\n%s\n```");
+$r = submit(['name' => 'Clinton', 'email' => 'clinton@dispense.test', 'message' => $real['Clinton']]);
+$oid = count($GLOBALS['inserted']) + 100;
+check($r->success && $r->data['id'] > 0 && str_contains($r->data['redirect'], 'sent='), 'AI 正常：照常 ?sent= 计转化');
+check(str_starts_with($GLOBALS['mails'][0]['subject'] ?? '', '【★★★★☆】') && str_contains($GLOBALS['mails'][0]['body'] ?? '', '南非物流公司'), 'AI 正常：邮件标题带星、正文有背调');
+check(str_contains($GLOBALS['dingtalk'][0][0]['title'] ?? '', '★★★★☆') && ($GLOBALS['dingtalk'][0][0]['meta'][0]['label'] ?? '') === 'AI 背调', 'AI 正常：钉钉带星和背调');
+check(($GLOBALS['meta'][$oid]['_screen_stars'] ?? '') === '4' && !isset($GLOBALS['meta'][$oid]['_invalid']), 'AI 正常：存下星级，不标无效');
+
+// AI 出错/超时：改用规则。
+$_SERVER['REMOTE_ADDR'] = '192.0.2.83';
+$GLOBALS['mails'] = [];
+unset($GLOBALS['ai_reply']);
+$r = submit(['name' => 'Yaron', 'email' => 'yaron@scam.test', 'message' => $spam['Yaron']]);
+$fid = count($GLOBALS['inserted']) + 100;
+check($r->data['id'] === 0 && str_starts_with($GLOBALS['mails'][0]['subject'] ?? '', '【疑似垃圾】') && str_contains((string) ($GLOBALS['meta'][$fid]['_screened_by'] ?? ''), 'AI 没有按时回答'), 'AI 超时：退回规则，照发邮件但标疑似');
+$GLOBALS['ai_reply'] = ['code' => 200, 'body' => '{"choices":[{"message":{"content":"I cannot help"}}]}'];
+check(achord_inquiry_screen(['message' => $real['Clinton']], '192.0.2.84')['verdict'] === 'ok', 'AI 答非所问：退回规则');
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => null, 'stars' => 5]);
+check(achord_inquiry_ai_assess(['message' => 'x'], []) === null && achord_inquiry_screen(['message' => $spam['Yaron']], '192.0.2.85')['verdict'] === 'suspect', 'AI 的 spam 不是明确是/否：当没回答，规则照判');
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => 'false', 'stars' => 2, 'summary' => 's']);
+check(achord_inquiry_ai_assess(['message' => 'x'], [])['spam'] === false, 'spam 写成字符串 "false" 也认');
+$GLOBALS['safe_gets'] = [];
+achord_inquiry_domain_facts('safe-check.test');
+check(count($GLOBALS['safe_gets']) === 2, '查客户域名官网和 RDAP 都走 wp_safe_remote_get（防 SSRF）');
+check(empty($GLOBALS['scheduled']), '判断做完就撤掉兜底定时任务');
+// 兜底：先存后判；请求中途断开时，3 分钟后补发通知。
+$GLOBALS['mails'] = [];
+$GLOBALS['meta'][701] = ['_name' => 'Cut', '_email' => 'cut@client.test', '_message' => 'Need 5 ton crane'];
+achord_inquiry_handle_unscreened(701);
+check(count($GLOBALS['mails']) === 1 && ($GLOBALS['meta'][701]['_screen_verdict'] ?? '') === 'unfinished', '判断没做完的询盘：兜底补发通知');
+achord_inquiry_handle_unscreened(701);
+check(count($GLOBALS['mails']) === 1, '兜底只补发一次');
+// 判定已写下、但拦截动作没做完就断开：兜底按判定把事做完（标无效、钉钉拦截、不发邮件）。
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
+$GLOBALS['meta'][702] = ['_name' => 'Spam', '_email' => 's@scam.test', '_screen_verdict' => 'spam', '_screen_reason' => '群发骗局', '_screened_by' => 'AI（m1）'];
+achord_inquiry_handle_unscreened(702);
+check(!$GLOBALS['mails'] && count($GLOBALS['dingtalk']) === 1 && str_contains((string) ($GLOBALS['meta'][702]['_invalid'] ?? ''), '群发骗局') && ($GLOBALS['meta'][702]['_screen_done'] ?? '') === '1', '判定后断开：兜底照判定拦截');
+$ip_values = array_column(array_filter($GLOBALS['dingtalk'][0][0]['meta'], fn($m) => $m['label'] === 'IP 地址'), 'value');
+check($ip_values === [] && achord_inquiry_client_ip() === $_SERVER['REMOTE_ADDR'], '兜底（定时任务）不把服务器自己的 IP 当成提交人 IP；结束后恢复');
+$GLOBALS['dingtalk'] = [];
+$GLOBALS['meta'][707] = ['_name' => 'Spam2', '_email' => 's2@scam.test', '_ip' => '198.51.100.7', '_screen_verdict' => 'spam', '_screen_reason' => 'x'];
+achord_inquiry_handle_unscreened(707);
+check(str_starts_with((string) (array_column(array_filter($GLOBALS['dingtalk'][0][0]['meta'], fn($m) => $m['label'] === 'IP 地址'), 'value')[0] ?? ''), '198.51.100.7'), '兜底用询盘存下的提交人 IP');
+// 正常询盘判定写下、邮件没发就断开：兜底补发。
+$GLOBALS['meta'][703] = ['_name' => 'Ok', '_email' => 'ok@client.test', '_message' => 'Need 5 ton crane', '_screen_verdict' => 'ok', '_screen_stars' => '4'];
+achord_inquiry_handle_unscreened(703);
+check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【★★★★☆】'), '判定后断开：兜底补发带星邮件');
+$GLOBALS['mails'] = [];
+$GLOBALS['meta'][704] = ['_name' => 'Trashed', '_email' => 't@client.test'];
+$GLOBALS['post_status'][704] = 'trash';
+achord_inquiry_handle_unscreened(704);
+$GLOBALS['meta'][705] = ['_name' => 'Marked', '_email' => 'm@client.test', '_invalid' => '后台人工标记'];
+achord_inquiry_handle_unscreened(705);
+$GLOBALS['meta'][706] = ['_name' => 'Other', '_email' => 'o@client.test'];
+$GLOBALS['post_type'][706] = 'post';
+achord_inquiry_handle_unscreened(706);
+check(!$GLOBALS['mails'], '兜底不补发：已进回收站、已被人工标无效、不是询盘');
+// 判成疑似、自动标了无效但邮件没发就断开：自动标记不算人工决定，兜底照发带【疑似垃圾】的邮件。
+$GLOBALS['meta'][708] = ['_name' => 'Sus', '_email' => 'sus@client.test', '_message' => 'x', '_screen_verdict' => 'suspect', '_screen_reason' => '机房 IP', '_invalid' => '自动判定疑似垃圾：机房 IP', '_invalid_auto' => '1'];
+achord_inquiry_handle_unscreened(708);
+check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【疑似垃圾】') && ($GLOBALS['meta'][708]['_screen_done'] ?? '') === '1', '自动标的疑似：兜底照发通知');
+// 自动标记后管理员又手动标无效：算人工决定，兜底不发。
+$GLOBALS['mails'] = [];
+$GLOBALS['meta'][710] = ['_name' => 'Sus2', '_email' => 'sus2@client.test', '_screen_verdict' => 'suspect', '_screen_reason' => 'x', '_invalid' => 'x', '_invalid_auto' => '1'];
+achord_inquiry_set_invalid(710, '与产品无关');
+achord_inquiry_handle_unscreened(710);
+check(!$GLOBALS['mails'] && !isset($GLOBALS['meta'][710]['_invalid_auto']), '人工改标无效后兜底不发');
+// 判成垃圾、断开后管理员先「恢复有效」：补发邮件一次，兜底不再标回无效、不再发拦截钉钉。
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
+$GLOBALS['meta'][709] = ['_name' => 'Real', '_email' => 'real@client.test', '_message' => 'x', '_screen_verdict' => 'spam', '_screen_reason' => 'x', '_invalid' => '已拦截：x', '_invalid_auto' => '1'];
+$GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([709])] = 1;
+achord_inquiry_set_invalid(709, '');
+achord_inquiry_handle_unscreened(709);
+check(count($GLOBALS['mails']) === 1 && !$GLOBALS['dingtalk'] && ($GLOBALS['meta'][709]['_invalid'] ?? '') === '' && !isset($GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([709])]), '恢复有效后兜底不再标回无效');
+// 提交请求还在等 AI 时管理员已处理：判定出来后不再覆盖人工决定、不再发通知。
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
+$GLOBALS['meta'][711] = ['_name' => 'M', '_email' => 'm@client.test', '_invalid' => '后台人工标记'];
+$a = achord_inquiry_finish_screened(711, ['name' => 'M', 'email' => 'm@client.test', 'screen_verdict' => 'ok']);
+$GLOBALS['meta'][712] = ['_name' => 'R', '_email' => 'r@client.test', '_screen_done' => '1'];
+$b = achord_inquiry_finish_screened(712, ['name' => 'R', 'email' => 'r@client.test', 'screen_verdict' => 'spam', 'screen_reason' => 'x']);
+check($a === 0 && $b === 0 && !$GLOBALS['mails'] && !$GLOBALS['dingtalk'] && $GLOBALS['meta'][711]['_invalid'] === '后台人工标记' && ($GLOBALS['meta'][712]['_invalid'] ?? '') === '', '等 AI 期间人工标记/恢复：判定不覆盖、不发通知');
+// 管理员「恢复有效」补发邮件时，不把管理员自己的 IP 当成提交人 IP；用询盘存下的 IP。
+$GLOBALS['mails'] = [];
+$GLOBALS['meta'][713] = ['_name' => 'Back', '_email' => 'back@client.test', '_ip' => '198.51.100.9', '_screen_verdict' => 'spam', '_screen_done' => '1', '_invalid' => 'x', '_invalid_auto' => '1'];
+achord_inquiry_set_invalid(713, '');
+check(count($GLOBALS['mails']) === 1 && str_contains($GLOBALS['mails'][0]['body'], '198.51.100.9') && !str_contains($GLOBALS['mails'][0]['body'], (string) $_SERVER['REMOTE_ADDR']) && achord_inquiry_client_ip() === $_SERVER['REMOTE_ADDR'], '恢复有效补发：用存下的提交人 IP，结束后复原');
+// 收尾和人工标记共用一把锁：别人拿着锁时拿不到，用完都放掉。
+check(!$GLOBALS['wpdb']->locks, '收尾、标记做完都放掉锁');
+$GLOBALS['wpdb']->locks['_achord_inquiry_lock_714'] = time() + 60;
+check(achord_inquiry_lock(714, 0.0) === false, '锁被占着时拿不到');
+$GLOBALS['wpdb']->locks['_achord_inquiry_lock_714'] = time() - 1;
+check(achord_inquiry_lock(714, 0.0) === true && achord_inquiry_lock(714, 0.0) === true, '过期的锁可以接手；同一请求内可重入');
+achord_inquiry_unlock(714); achord_inquiry_unlock(714);
+check(!$GLOBALS['wpdb']->locks, '重入的锁全部放掉才删');
+// 锁被别的请求占着（比如正在发邮件）：人工标记返回失败、不动数据；收尾什么都不做，兜底一分钟后重试。
+$GLOBALS['mails'] = []; $GLOBALS['scheduled'] = [];
+$GLOBALS['meta'][715] = ['_name' => 'Busy', '_email' => 'busy@client.test', '_message' => 'x', '_screen_verdict' => 'spam', '_invalid' => 'x', '_invalid_auto' => '1'];
+$GLOBALS['wpdb']->locks['_achord_inquiry_lock_715'] = time() + 300;
+$GLOBALS['filters']['achord_inquiry_lock_wait'] = fn() => 0.0;
+check(achord_inquiry_set_invalid(715, '') === false && $GLOBALS['meta'][715]['_invalid'] === 'x' && !$GLOBALS['mails'], '锁被占：恢复有效不执行，提示稍后再试');
+check(achord_inquiry_finish_screened(715, ['screen_verdict' => 'ok', 'name' => 'Busy', 'email' => 'busy@client.test']) === null && !$GLOBALS['mails'], '锁被占：收尾不动');
+achord_inquiry_handle_unscreened(715);
+check(!$GLOBALS['mails'] && isset($GLOBALS['scheduled']['achord_inquiry_unscreened' . json_encode([715])]), '锁被占：兜底一分钟后再试');
+unset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_715'], $GLOBALS['filters']['achord_inquiry_lock_wait']);
+$GLOBALS['gets'] = [];
+$short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
+check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');
+$GLOBALS['ai_requests'] = [];
+$GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'stars' => 3, 'summary' => 's']);
+achord_inquiry_ai_assess(['message' => 'x'], [], 7);
+check(($GLOBALS['ai_requests'][0]['args']['timeout'] ?? 0) === 7, 'AI 等待时间不超过剩下的预算');
+check(achord_inquiry_sanitize_options(['ai_base_url' => 'http://insecure.test'])['ai_base_url'] === '', 'Base URL 只认 https');
+check(achord_inquiry_sanitize_options(['ai_timeout' => '999'])['ai_timeout'] === '60', '超时最多 60 秒');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['ai_api_key'] = '';
+check(achord_inquiry_ai_config() === null, '没填密钥就不调 AI');
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);

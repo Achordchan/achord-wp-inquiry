@@ -263,3 +263,51 @@ function achord_inquiry_suspect_reason(array $fields, string $ip): string
     }
     return implode('；', $reasons);
 }
+
+/**
+ * A per-inquiry lock in the options table, so finishing the screening (submission or safety net) and an administrator's
+ * mark/restore never act on the same inquiry at once. INSERT IGNORE is atomic; a lock left by a crashed request expires
+ * after 5 minutes. Waits up to $wait seconds and returns false if it still cannot get the lock: the caller must not touch
+ * the inquiry then (the screening leaves it to the safety net, an administrator is asked to try again). Re-entrant.
+ */
+function achord_inquiry_lock(int $post_id, float $wait = 15.0): bool
+{
+    global $wpdb;
+    $held = &achord_inquiry_locks_held();
+    if (isset($held[$post_id])) {
+        $held[$post_id]++;
+        return true;
+    }
+    $name = '_achord_inquiry_lock_' . $post_id;
+    $wait = (float) apply_filters('achord_inquiry_lock_wait', $wait, $post_id);
+    $until = microtime(true) + $wait;
+    do {
+        $wpdb->query($wpdb->prepare("DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value + 0 < %d", $name, time()));
+        if ((int) $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $name, (string) (time() + 300))) === 1) {
+            $held[$post_id] = 1;
+            return true;
+        }
+        usleep(200000);
+    } while (microtime(true) < $until);
+    return false;
+}
+
+function achord_inquiry_unlock(int $post_id): void
+{
+    global $wpdb;
+    $held = &achord_inquiry_locks_held();
+    if (!isset($held[$post_id])) {
+        return;
+    }
+    if (--$held[$post_id] > 0) {
+        return;
+    }
+    unset($held[$post_id]);
+    $wpdb->query($wpdb->prepare("DELETE FROM {$wpdb->options} WHERE option_name = %s", '_achord_inquiry_lock_' . $post_id));
+}
+
+function &achord_inquiry_locks_held(): array
+{
+    static $held = [];
+    return $held;
+}

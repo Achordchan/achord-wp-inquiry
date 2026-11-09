@@ -3,6 +3,7 @@
 BOB-LIFT 各站共用的询盘后台。表单长什么样由主题决定，提交之后的事都归插件：
 
 - 接收提交：随机数、蜜罐、必填项、Cloudflare Turnstile、每个 IP 十分钟 5 条、黑名单
+- 筛查：设了 AI 接口就先由 AI 判垃圾并给 1–5 星背调（服务器先查 IP 归属、邮箱域名官网和注册日期、来源渠道），垃圾不发邮件、钉钉推「拦截一条垃圾询盘」、不计转化；没设或超时用规则判「疑似垃圾」
 - 来源：前端脚本 `assets/inquiry.js` 在提交时补上进站来源（上一站域名、广告点击编号和 utm，后者只在访客同意广告 Cookie 时记 90 天），后台算出来源渠道、访问设备、IP 和国家
 - 存储：后台「询盘」列表（每条询盘一篇私有文章，字段存在 `_字段名`），列表列、只读详情框、复制客户信息按钮，管理员只读接口 `/wp/v2/<rest_base>`；「标为无效」（列表行操作，或管理员经接口只写 `meta.<rest_record>_invalid` 一个字段写原因、写空字符串恢复），日报统计真实询盘时排除带 `invalid` 的
 - 通知：经典卡片邮件（来源渠道、设备、国家、语言、时间、IP 两行六格，广告原始参数放底部），装了 achord-wp-dingtalk 时推钉钉
@@ -62,6 +63,7 @@ document.dispatchEvent(new Event('achord-inquiry:consent')); // 访客改了选�
 | `achord_inquiry_mail_rows` | 客户信息表后加行 |
 | `achord_inquiry_mail_subject` | 邮件主题 |
 | `achord_inquiry_recipient` | 询盘设置没填收件人时的地址 |
+| `achord_inquiry_ai_catalog` | 给 AI 的网站与产品说明（默认是站名、副标题和 product 文章标题） |
 | `achord_inquiry_dingtalk_rows` | 钉钉字段 |
 | `achord_inquiry_product_column` | 后台列表「意向产品」一列 |
 | `achord_inquiry_accept_attribution` | 是否收广告参数（没有广告同意项时返回 false） |

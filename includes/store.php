@@ -103,6 +103,32 @@ if (class_exists('WP_REST_Posts_Controller')) {
             return parent::update_item_permissions_check($request);
         }
 
+        /**
+         * The flag goes through achord_inquiry_set_invalid() rather than a plain meta write, so a connector's mark or
+         * restore counts as the administrator's call (clears _invalid_auto, finishes the screening, sends a missed
+         * email) and waits for a screening in progress.
+         */
+        public function update_item($request)
+        {
+            $post = get_post((int) $request['id']);
+            if (!$post instanceof WP_Post || $post->post_type !== $this->post_type) {
+                return achord_inquiry_rest_error('rest_post_invalid_id', 'Invalid inquiry ID.', 404);
+            }
+            $params = array_merge((array) $request->get_query_params(), (array) $request->get_body_params(), (array) $request->get_json_params());
+            // update_item_permissions_check() already refuses a request without the flag; checked again so an update
+            // that omits it can never read as a restore.
+            $meta = $params['meta'] ?? null;
+            $flag = achord_inquiry_invalid_rest_name();
+            if (!is_array($meta) || !array_key_exists($flag, $meta) || !is_string($meta[$flag])) {
+                return achord_inquiry_rest_error('achord_inquiry_read_only', 'Only meta.' . $flag . ' can be written, and it must be given.', 400);
+            }
+            if (!achord_inquiry_set_invalid((int) $post->ID, $meta[$flag])) {
+                return achord_inquiry_rest_error('achord_inquiry_busy', 'This inquiry is being processed (notifications are going out); try again shortly.', 409);
+            }
+            $request->set_param('context', 'edit');
+            return rest_ensure_response($this->prepare_item_for_response(get_post((int) $post->ID), $request));
+        }
+
         public function delete_item_permissions_check($request)
         {
             return achord_inquiry_rest_error('achord_inquiry_read_only', 'Inquiries are read-only here; manage them in wp-admin.', 403);
@@ -149,14 +175,57 @@ function achord_inquiry_rest_update_refused_params($request, array $writable): a
 
 /**
  * Mark an inquiry invalid (a reason such as 与产品无关) or valid again (''). The inquiry stays as it was; the flag only
- * tells reports and the list that it is not a real lead.
+ * tells reports and the list that it is not a real lead. $auto is the screening's own mark (_invalid_auto), which the
+ * safety net may finish; a mark or restore from the list or the connector is the administrator's call and stands.
  */
-function achord_inquiry_set_invalid(int $post_id, string $reason): void
+function achord_inquiry_set_invalid(int $post_id, string $reason, bool $auto = false): bool
 {
+    // The screening calls this holding the lock already (re-entrant); an administrator waits for a running screening,
+    // and is told to try again (false) rather than act alongside it.
+    if (!achord_inquiry_lock($post_id)) {
+        return false;
+    }
+    try {
+        achord_inquiry_set_invalid_locked($post_id, $reason, $auto);
+    } finally {
+        achord_inquiry_unlock($post_id);
+    }
+    return true;
+}
+
+function achord_inquiry_set_invalid_locked(int $post_id, string $reason, bool $auto): void
+{
+    // Read what another request may have written while we waited, not this request's cached copy.
+    wp_cache_delete($post_id, 'post_meta');
     $reason = trim(sanitize_text_field($reason));
     if ($reason === '') {
         delete_post_meta($post_id, '_invalid');
+        delete_post_meta($post_id, '_invalid_auto');
+        // An inquiry the screening stopped (or never finished) never reached sales: restoring it sends the email it
+        // missed, once. A blocklist draft stays as it was.
+        $verdict = (string) get_post_meta($post_id, '_screen_verdict', true);
+        $unfinished = get_post_meta($post_id, '_screen_done', true) !== '1' && get_post_meta($post_id, '_blocked', true) === '';
+        if (($verdict === 'spam' || $unfinished) && get_post_meta($post_id, '_mail_sent', true) === '') {
+            // Sent from the administrator's request: the sender's saved IP (or none) stands in for theirs.
+            $record = achord_inquiry_record($post_id);
+            achord_inquiry_ip_override((string) ($record['ip'] ?? ''));
+            try {
+                achord_inquiry_send_mail(array_diff_key($record, ['invalid' => 1, 'screen_verdict' => 1, 'screen_reason' => 1]), $post_id);
+            } finally {
+                achord_inquiry_ip_override(null, true);
+            }
+        }
+        // The administrator has decided: the safety net must not mark it invalid again.
+        if (get_post_meta($post_id, '_blocked', true) === '') {
+            update_post_meta($post_id, '_screen_done', '1');
+            wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
+        }
         return;
+    }
+    if ($auto) {
+        update_post_meta($post_id, '_invalid_auto', '1');
+    } else {
+        delete_post_meta($post_id, '_invalid_auto');
     }
     update_post_meta($post_id, '_invalid', wp_slash($reason));
 }
@@ -204,6 +273,10 @@ function achord_inquiry_admin_labels(): array
         'ip' => 'IP 地址',
         'blocked' => '黑名单拦截',
         'invalid' => '已标无效',
+        'screen_stars' => '询盘优质度（星）',
+        'screen_summary' => 'AI 背调',
+        'screen_reason' => '判定原因',
+        'screened_by' => '判定方式',
     ];
     foreach (ACHORD_INQUIRY_ATTRIBUTION_LABELS as $name => $label) {
         $labels['attr_' . $name] = '广告来源 · ' . $label;
@@ -224,7 +297,7 @@ function achord_inquiry_meta_box(WP_Post $post): void
     echo '<p style="margin:0 0 12px;color:#646970">这是前台询盘表单生成的只读详情，不需要像文章一样编辑标题或正文。</p>';
     echo '<button type="button" class="button button-primary" style="margin:0 0 12px" onclick="navigator.clipboard && navigator.clipboard.writeText(this.dataset.copy);this.textContent=\'已复制客户信息\';" data-copy="' . esc_attr(implode("\n", $copy)) . '">复制客户信息</button>';
     echo '<table class="widefat striped"><tbody>';
-    $optional = ['blocked', 'invalid', 'lead_type', 'language', 'page_referrer'];
+    $optional = ['blocked', 'invalid', 'lead_type', 'language', 'page_referrer', 'screen_stars', 'screen_summary', 'screen_reason', 'screened_by'];
     foreach ($labels as $key => $label) {
         $value = (string) get_post_meta($post->ID, '_' . $key, true);
         // Ad attribution exists only for visitors who came from an ad and agreed to advertising cookies.
@@ -261,6 +334,10 @@ function achord_inquiry_column_content(string $column, int $post_id): void
             $invalid = $meta('invalid');
             if ($invalid !== '') {
                 echo '<span style="display:inline-block;margin:0 0 4px;padding:1px 6px;border:1px solid #b45309;border-radius:2px;color:#92400e;font-weight:600">无效 · ' . esc_html($invalid) . '</span><br>';
+            }
+            $stars = (int) $meta('screen_stars');
+            if ($stars > 0) {
+                echo '<span title="' . esc_attr($meta('screen_summary')) . '" style="color:#d97706;letter-spacing:1px">' . esc_html(achord_inquiry_stars_text($stars)) . '</span><br>';
             }
             $name = $meta('name');
             echo '<strong><a class="row-title" href="' . esc_url((string) get_edit_post_link($post_id)) . '">' . esc_html($name !== '' ? $name : get_the_title($post_id)) . '</a></strong>';
@@ -341,7 +418,9 @@ function achord_inquiry_store_hooks(): void
             wp_die('无权操作这条询盘。', 403);
         }
         check_admin_referer('achord_inquiry_invalid_' . $post_id);
-        achord_inquiry_set_invalid($post_id, ($_GET['mark'] ?? '') === '1' ? '后台人工标记' : '');
+        if (!achord_inquiry_set_invalid($post_id, ($_GET['mark'] ?? '') === '1' ? '后台人工标记' : '')) {
+            wp_die('这条询盘正在发通知，请过一会儿再试。', '请稍后再试', ['response' => 409, 'back_link' => true]);
+        }
         wp_safe_redirect(wp_get_referer() ?: admin_url('edit.php?post_type=' . $type));
         exit;
     });

@@ -23,6 +23,7 @@ function achord_inquiry_boot(): void
     add_action('admin_post_' . achord_inquiry_name('submit_inquiry'), 'achord_inquiry_handle');
     add_action('admin_post_nopriv_' . achord_inquiry_name('submit_inquiry'), 'achord_inquiry_handle');
     add_action('wp_enqueue_scripts', 'achord_inquiry_enqueue_script');
+    add_action('achord_inquiry_unscreened', 'achord_inquiry_handle_unscreened');
     do_action('achord_inquiry_booted');
 }
 
@@ -168,19 +169,135 @@ function achord_inquiry_handle(): void
     }
     // A sender on the blocklist is saved as a blocked draft and told it went through: no mail, no DingTalk, no conversion.
     $block_reason = achord_inquiry_block_reason((string) $fields['email'], achord_inquiry_client_ip());
-    $post_id = achord_inquiry_save($fields, $block_reason);
+    if ($block_reason !== '') {
+        $post_id = achord_inquiry_save($fields, $block_reason);
+        if (is_wp_error($post_id)) {
+            achord_inquiry_fail('saveFailed', 'error', 500);
+        }
+        achord_inquiry_succeed(0);
+    }
+    // Saved before screening, so a request cut off while waiting for the AI loses nothing: a safety net 3 minutes on
+    // sends the notification of any inquiry the screening never finished (achord_inquiry_handle_unscreened()).
+    $post_id = achord_inquiry_save($fields);
     if (is_wp_error($post_id)) {
         achord_inquiry_fail('saveFailed', 'error', 500);
     }
-    if ($block_reason !== '') {
-        achord_inquiry_succeed(0);
+    $post_id = (int) $post_id;
+    wp_schedule_single_event(time() + 180, 'achord_inquiry_unscreened', [$post_id]);
+    // Screening (screen.php): the AI's verdict, stars and background note, or the rules when there is no AI.
+    $screen = achord_inquiry_screen($fields, achord_inquiry_client_ip());
+    $fields['screen_verdict'] = $screen['verdict'];
+    $fields['screen_reason'] = $screen['reason'];
+    $fields['screen_stars'] = $screen['stars'] > 0 ? (string) $screen['stars'] : '';
+    $fields['screen_summary'] = $screen['summary'];
+    $fields['screened_by'] = $screen['by'];
+    foreach (['screen_verdict', 'screen_reason', 'screen_stars', 'screen_summary', 'screened_by'] as $key) {
+        if ($fields[$key] !== '') {
+            update_post_meta($post_id, '_' . $key, wp_slash($fields[$key]));
+        }
     }
-    // Suspected spam (guard.php) still reaches sales, flagged, but is marked invalid and never counted as a conversion.
-    $suspect = achord_inquiry_suspect_check_enabled() ? achord_inquiry_suspect_reason($fields, achord_inquiry_client_ip()) : '';
-    if ($suspect !== '') {
-        achord_inquiry_set_invalid((int) $post_id, '自动判定疑似垃圾：' . $suspect);
-        $fields['suspect'] = $suspect;
+    $answer = achord_inquiry_finish_screened($post_id, $fields);
+    achord_inquiry_succeed($answer ?? 0);
+}
+
+/**
+ * What the verdict asks for, then marks the inquiry done (_screen_done) and lifts the safety net; returns the id the
+ * thank-you page may carry (0 for spam and suspect, so no conversion; null when another request holds the inquiry, which
+ * is then left to the safety net). Spam: marked invalid, a one-line DingTalk notice, no email (恢复有效 sends it). Suspect: marked invalid, sent flagged. Otherwise sent with its stars.
+ */
+function achord_inquiry_finish_screened(int $post_id, array $fields): ?int
+{
+    // An administrator may have marked or restored it while the AI was still thinking (or before the safety net ran):
+    // restoring finishes the screening (_screen_done), a manual invalid mark has no _invalid_auto. Their call stands.
+    // Under the inquiry's lock, so a restore or mark from the list cannot slip in between the check and the actions.
+    // Without the lock nothing is touched: null, and the safety net (still scheduled) finishes it later.
+    if (!achord_inquiry_lock($post_id)) {
+        return null;
     }
-    achord_inquiry_notify((int) $post_id, $fields);
-    achord_inquiry_succeed($suspect !== '' ? 0 : (int) $post_id);
+    try {
+        return achord_inquiry_finish_screened_locked($post_id, $fields);
+    } finally {
+        achord_inquiry_unlock($post_id);
+    }
+}
+
+function achord_inquiry_finish_screened_locked(int $post_id, array $fields): int
+{
+    // Read what another request may have written while we waited, not this request's cached copy.
+    wp_cache_delete($post_id, 'post_meta');
+    if (achord_inquiry_manually_decided($post_id)) {
+        update_post_meta($post_id, '_screen_done', '1');
+        wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
+        return 0;
+    }
+    $verdict = (string) ($fields['screen_verdict'] ?? '');
+    $reason = (string) ($fields['screen_reason'] ?? '');
+    $by = (string) ($fields['screened_by'] ?? '');
+    if ($verdict === 'spam') {
+        achord_inquiry_set_invalid($post_id, '已拦截（' . $by . '）：' . $reason, true);
+        if (function_exists('achord_dingtalk_dispatch') && apply_filters('achord_inquiry_send_dingtalk', true, $fields)) {
+            achord_dingtalk_dispatch(achord_inquiry_dingtalk_blocked_message($post_id, $fields), (string) achord_inquiry_config()['dingtalk_source']);
+        }
+    } else {
+        if ($verdict === 'suspect') {
+            achord_inquiry_set_invalid($post_id, '自动判定疑似垃圾：' . $reason, true);
+            $fields['suspect'] = $reason;
+        }
+        if (get_post_meta($post_id, '_mail_sent', true) === '') {
+            achord_inquiry_notify($post_id, $fields);
+        }
+    }
+    update_post_meta($post_id, '_screen_done', '1');
+    wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
+    return in_array($verdict, ['spam', 'suspect'], true) ? 0 : $post_id;
+}
+
+/** Marked invalid by an administrator (not the screening's own _invalid_auto mark), or already finished/restored. */
+function achord_inquiry_manually_decided(int $post_id): bool
+{
+    if (get_post_meta($post_id, '_screen_done', true) === '1') {
+        return true;
+    }
+    return get_post_meta($post_id, '_invalid', true) !== '' && get_post_meta($post_id, '_invalid_auto', true) !== '1';
+}
+
+/**
+ * The safety net: an inquiry whose request was cut off before its screening finished (waiting for the AI, or after the
+ * verdict but before its actions) is finished here, once.
+ */
+function achord_inquiry_handle_unscreened($post_id): void
+{
+    $post_id = (int) $post_id;
+    if ($post_id <= 0 || get_post_meta($post_id, '_screen_done', true) === '1') {
+        return;
+    }
+    // Deleted, trashed or not an inquiry: nothing to send.
+    $status = get_post_status($post_id);
+    if ($status === false || $status === 'trash' || get_post_type($post_id) !== achord_inquiry_post_type()) {
+        return;
+    }
+    // An administrator marked it invalid meanwhile: their call stands, nothing is sent (achord_inquiry_finish_screened()
+    // checks it again). The screening's own mark (_invalid_auto, spam or suspect cut off before its notice) is finished.
+    if (achord_inquiry_manually_decided($post_id)) {
+        update_post_meta($post_id, '_screen_done', '1');
+        return;
+    }
+    // A verdict already saved is carried out as it stands; without one, the inquiry goes to sales as an ordinary one.
+    $fields = achord_inquiry_record($post_id);
+    if (($fields['screen_verdict'] ?? '') === '') {
+        $fields['screen_verdict'] = 'unfinished';
+        $fields['screened_by'] = '未完成（提交请求中途断开，按普通询盘补发）';
+        update_post_meta($post_id, '_screen_verdict', 'unfinished');
+        update_post_meta($post_id, '_screened_by', wp_slash($fields['screened_by']));
+    }
+    // Sent from WP-Cron: the sender's saved IP (or none) stands in for the cron request's own address.
+    achord_inquiry_ip_override((string) ($fields['ip'] ?? ''));
+    try {
+        // Busy (an administrator's restore, say): try again in a minute.
+        if (achord_inquiry_finish_screened($post_id, $fields) === null) {
+            wp_schedule_single_event(time() + 60, 'achord_inquiry_unscreened', [$post_id]);
+        }
+    } finally {
+        achord_inquiry_ip_override(null, true);
+    }
 }
