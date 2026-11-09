@@ -196,37 +196,56 @@ function achord_inquiry_handle(): void
             update_post_meta($post_id, '_' . $key, wp_slash($fields[$key]));
         }
     }
-    wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
-    if ($screen['verdict'] === 'spam') {
-        // Stopped: marked invalid, no email, a one-line DingTalk notice, no conversion. 恢复有效 sends the email.
-        achord_inquiry_set_invalid((int) $post_id, '已拦截（' . $screen['by'] . '）：' . $screen['reason']);
-        if (function_exists('achord_dingtalk_dispatch') && apply_filters('achord_inquiry_send_dingtalk', true, $fields)) {
-            achord_dingtalk_dispatch(achord_inquiry_dingtalk_blocked_message((int) $post_id, $fields), (string) achord_inquiry_config()['dingtalk_source']);
-        }
-        achord_inquiry_succeed(0);
-    }
-    if ($screen['verdict'] === 'suspect') {
-        // Suspected by the rules: still reaches sales, flagged, but marked invalid and never counted as a conversion.
-        achord_inquiry_set_invalid((int) $post_id, '自动判定疑似垃圾：' . $screen['reason']);
-        $fields['suspect'] = $screen['reason'];
-    }
-    achord_inquiry_notify((int) $post_id, $fields);
-    achord_inquiry_succeed($screen['verdict'] === 'suspect' ? 0 : (int) $post_id);
+    $answer = achord_inquiry_finish_screened($post_id, $fields);
+    achord_inquiry_succeed($answer);
 }
 
 /**
- * The safety net: an inquiry whose screening never finished (the request was cut off waiting for the AI) is told to
- * sales as an ordinary inquiry, once, unless it was already notified or stopped.
+ * What the verdict asks for, then marks the inquiry done (_screen_done) and lifts the safety net; returns the id the
+ * thank-you page may carry (0 for spam and suspect, so no conversion). Spam: marked invalid, a one-line DingTalk notice,
+ * no email (恢复有效 sends it). Suspect: marked invalid, sent flagged. Otherwise sent with its stars.
+ */
+function achord_inquiry_finish_screened(int $post_id, array $fields): int
+{
+    $verdict = (string) ($fields['screen_verdict'] ?? '');
+    $reason = (string) ($fields['screen_reason'] ?? '');
+    $by = (string) ($fields['screened_by'] ?? '');
+    if ($verdict === 'spam') {
+        achord_inquiry_set_invalid($post_id, '已拦截（' . $by . '）：' . $reason);
+        if (function_exists('achord_dingtalk_dispatch') && apply_filters('achord_inquiry_send_dingtalk', true, $fields)) {
+            achord_dingtalk_dispatch(achord_inquiry_dingtalk_blocked_message($post_id, $fields), (string) achord_inquiry_config()['dingtalk_source']);
+        }
+    } else {
+        if ($verdict === 'suspect') {
+            achord_inquiry_set_invalid($post_id, '自动判定疑似垃圾：' . $reason);
+            $fields['suspect'] = $reason;
+        }
+        if (get_post_meta($post_id, '_mail_sent', true) === '') {
+            achord_inquiry_notify($post_id, $fields);
+        }
+    }
+    update_post_meta($post_id, '_screen_done', '1');
+    wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
+    return in_array($verdict, ['spam', 'suspect'], true) ? 0 : $post_id;
+}
+
+/**
+ * The safety net: an inquiry whose request was cut off before its screening finished (waiting for the AI, or after the
+ * verdict but before its actions) is finished here, once.
  */
 function achord_inquiry_handle_unscreened($post_id): void
 {
     $post_id = (int) $post_id;
-    if ($post_id <= 0 || get_post_meta($post_id, '_screen_verdict', true) !== '' || get_post_meta($post_id, '_mail_sent', true) !== '') {
+    if ($post_id <= 0 || get_post_meta($post_id, '_screen_done', true) === '1') {
         return;
     }
+    // A verdict already saved is carried out as it stands; without one, the inquiry goes to sales as an ordinary one.
     $fields = achord_inquiry_record($post_id);
-    $fields['screened_by'] = '未完成（提交请求中途断开，按普通询盘补发）';
-    update_post_meta($post_id, '_screen_verdict', 'unfinished');
-    update_post_meta($post_id, '_screened_by', wp_slash($fields['screened_by']));
-    achord_inquiry_notify($post_id, $fields);
+    if (($fields['screen_verdict'] ?? '') === '') {
+        $fields['screen_verdict'] = 'unfinished';
+        $fields['screened_by'] = '未完成（提交请求中途断开，按普通询盘补发）';
+        update_post_meta($post_id, '_screen_verdict', 'unfinished');
+        update_post_meta($post_id, '_screened_by', wp_slash($fields['screened_by']));
+    }
+    achord_inquiry_finish_screened($post_id, $fields);
 }

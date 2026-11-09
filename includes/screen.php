@@ -81,7 +81,7 @@ function achord_inquiry_domain_facts(string $domain): array
         return $cached;
     }
     // wp_safe_remote_get(): the domain is the visitor's to choose, so the address and every redirect must be public.
-    $page = wp_safe_remote_get('https://' . $domain . '/', ['timeout' => 3, 'redirection' => 3, 'limit_response_size' => 200000]);
+    $page = wp_safe_remote_get('https://' . $domain . '/', ['timeout' => 3, 'redirection' => 1, 'limit_response_size' => 200000]);
     if (!is_wp_error($page)) {
         $code = (int) wp_remote_retrieve_response_code($page);
         if (preg_match('#<title[^>]*>(.*?)</title>#is', (string) wp_remote_retrieve_body($page), $match)) {
@@ -90,7 +90,7 @@ function achord_inquiry_domain_facts(string $domain): array
         $facts['website'] = $facts['website'] !== '' ? $facts['website'] : ($code > 0 ? '有网站但没有标题（HTTP ' . $code . '）' : '');
     }
     $facts['website'] = $facts['website'] !== '' ? $facts['website'] : '打不开';
-    $rdap = wp_safe_remote_get('https://rdap.org/domain/' . rawurlencode($domain), ['timeout' => 3, 'redirection' => 3]);
+    $rdap = wp_safe_remote_get('https://rdap.org/domain/' . rawurlencode($domain), ['timeout' => 3, 'redirection' => 1]);
     if (!is_wp_error($rdap) && (int) wp_remote_retrieve_response_code($rdap) === 200) {
         $data = json_decode((string) wp_remote_retrieve_body($rdap), true);
         foreach ((array) ($data['events'] ?? []) as $event) {
@@ -104,18 +104,20 @@ function achord_inquiry_domain_facts(string $domain): array
 }
 
 /** Everything the server can check about the sender, as labelled lines for the model (and the rules). */
-function achord_inquiry_screen_facts(array $fields, string $ip): array
+function achord_inquiry_screen_facts(array $fields, string $ip, float $deadline = 0.0): array
 {
+    // Each lookup takes up to 3 seconds; one that no longer fits before the deadline is skipped.
+    $fits = static fn(int $seconds): bool => $deadline <= 0 || microtime(true) + $seconds <= $deadline;
     $email = (string) ($fields['email'] ?? '');
     $domain = achord_inquiry_email_domain($email);
     $free = in_array($domain, ACHORD_INQUIRY_FREE_MAIL, true);
-    $ip_info = achord_inquiry_ip_info($ip);
-    $domain_facts = $free ? ['website' => '', 'registered' => ''] : achord_inquiry_domain_facts($domain);
+    $ip_info = $fits(6) ? achord_inquiry_ip_info($ip) : ['country' => '', 'org' => ''];
+    $domain_facts = $free || !$fits(6) ? ['website' => '', 'registered' => ''] : achord_inquiry_domain_facts($domain);
     $message = (string) ($fields['message'] ?? '');
     return array_filter([
         'IP 所在国家' => $ip_info['country'],
         'IP 网络归属' => $ip_info['org'],
-        'IP 是机房或 VPN' => achord_inquiry_hosting_org($ip) !== '' ? '是' : '否',
+        'IP 是机房或 VPN' => $ip_info['org'] === '' ? '' : (achord_inquiry_hosting_org($ip) !== '' ? '是' : '否'),
         '邮箱类型' => $domain === '' ? '' : ($free ? '免费邮箱（' . $domain . '）' : '公司域名（' . $domain . '）'),
         '邮箱域名官网标题' => $domain_facts['website'],
         '邮箱域名注册日期' => $domain_facts['registered'],
@@ -218,9 +220,9 @@ function achord_inquiry_screen(array $fields, string $ip): array
     if ($ai_set) {
         // One budget for the whole screening (lookups and AI), well inside a host's request limit; the AI gets what the
         // lookups leave, and none at all when fewer than 5 seconds are left.
-        $started = microtime(true);
-        $facts = achord_inquiry_screen_facts($fields, $ip);
-        $left = (int) floor((float) apply_filters('achord_inquiry_screen_budget', 40) - (microtime(true) - $started));
+        $deadline = microtime(true) + (float) apply_filters('achord_inquiry_screen_budget', 40);
+        $facts = achord_inquiry_screen_facts($fields, $ip, $deadline);
+        $left = (int) floor($deadline - microtime(true));
         $answer = $left >= 5 ? achord_inquiry_ai_assess($fields, $facts, $left) : null;
         if ($answer !== null) {
             return ['verdict' => $answer['spam'] ? 'spam' : 'ok'] + $answer;

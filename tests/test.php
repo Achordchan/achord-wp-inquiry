@@ -432,6 +432,18 @@ achord_inquiry_handle_unscreened(701);
 check(count($GLOBALS['mails']) === 1 && ($GLOBALS['meta'][701]['_screen_verdict'] ?? '') === 'unfinished', '判断没做完的询盘：兜底补发通知');
 achord_inquiry_handle_unscreened(701);
 check(count($GLOBALS['mails']) === 1, '兜底只补发一次');
+// 判定已写下、但拦截动作没做完就断开：兜底按判定把事做完（标无效、钉钉拦截、不发邮件）。
+$GLOBALS['mails'] = []; $GLOBALS['dingtalk'] = [];
+$GLOBALS['meta'][702] = ['_name' => 'Spam', '_email' => 's@scam.test', '_screen_verdict' => 'spam', '_screen_reason' => '群发骗局', '_screened_by' => 'AI（m1）'];
+achord_inquiry_handle_unscreened(702);
+check(!$GLOBALS['mails'] && count($GLOBALS['dingtalk']) === 1 && str_contains((string) ($GLOBALS['meta'][702]['_invalid'] ?? ''), '群发骗局') && ($GLOBALS['meta'][702]['_screen_done'] ?? '') === '1', '判定后断开：兜底照判定拦截');
+// 正常询盘判定写下、邮件没发就断开：兜底补发。
+$GLOBALS['meta'][703] = ['_name' => 'Ok', '_email' => 'ok@client.test', '_message' => 'Need 5 ton crane', '_screen_verdict' => 'ok', '_screen_stars' => '4'];
+achord_inquiry_handle_unscreened(703);
+check(count($GLOBALS['mails']) === 1 && str_starts_with($GLOBALS['mails'][0]['subject'], '【★★★★☆】'), '判定后断开：兜底补发带星邮件');
+$GLOBALS['gets'] = [];
+$short = achord_inquiry_screen_facts(['email' => 'a@company.test', 'message' => 'x'], '203.0.113.9', microtime(true) + 2);
+check(!isset($short['邮箱域名官网标题']) && !$GLOBALS['gets'], '预算不够就跳过查 IP 和域名');
 $GLOBALS['ai_requests'] = [];
 $GLOBALS['ai_reply'] = $ai_answer(['spam' => false, 'stars' => 3, 'summary' => 's']);
 achord_inquiry_ai_assess(['message' => 'x'], [], 7);
