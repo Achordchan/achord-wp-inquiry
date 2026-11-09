@@ -115,8 +115,14 @@ if (class_exists('WP_REST_Posts_Controller')) {
                 return achord_inquiry_rest_error('rest_post_invalid_id', 'Invalid inquiry ID.', 404);
             }
             $params = array_merge((array) $request->get_query_params(), (array) $request->get_body_params(), (array) $request->get_json_params());
-            $value = (string) (((array) ($params['meta'] ?? []))[achord_inquiry_invalid_rest_name()] ?? '');
-            if (!achord_inquiry_set_invalid((int) $post->ID, $value)) {
+            // update_item_permissions_check() already refuses a request without the flag; checked again so an update
+            // that omits it can never read as a restore.
+            $meta = $params['meta'] ?? null;
+            $flag = achord_inquiry_invalid_rest_name();
+            if (!is_array($meta) || !array_key_exists($flag, $meta) || !is_string($meta[$flag])) {
+                return achord_inquiry_rest_error('achord_inquiry_read_only', 'Only meta.' . $flag . ' can be written, and it must be given.', 400);
+            }
+            if (!achord_inquiry_set_invalid((int) $post->ID, $meta[$flag])) {
                 return achord_inquiry_rest_error('achord_inquiry_busy', 'This inquiry is being processed (notifications are going out); try again shortly.', 409);
             }
             $request->set_param('context', 'edit');
