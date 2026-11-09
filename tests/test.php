@@ -234,7 +234,7 @@ function submit(array $post): JsonExit
         foreach (array_keys($GLOBALS['scheduled'] ?? []) as $key) {
             if (str_starts_with($key, 'achord_inquiry_screen_now')) {
                 unset($GLOBALS['scheduled'][$key]);
-                achord_inquiry_screen_saved((int) json_decode(substr($key, strlen('achord_inquiry_screen_now')), true)[0]);
+                achord_inquiry_screen_saved(...json_decode(substr($key, strlen('achord_inquiry_screen_now')), true));
             }
         }
         return $e;
@@ -539,7 +539,7 @@ $_SERVER['REMOTE_ADDR'] = '192.0.2.120';
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['store_ip'] = '0';
 try { achord_inquiry_handle(); $fast = null; } catch (JsonExit $e) { $fast = $e; }
 $fid = (int) ($fast->data['id'] ?? 0);
-check($fast && $fast->success && $fid > 0 && !$GLOBALS['mails'] && !$GLOBALS['ai_requests'] && isset($GLOBALS['scheduled']['achord_inquiry_screen_now' . json_encode([$fid])]), '提交立刻返回成功，AI 和通知交给后台');
+check($fast && $fast->success && $fid > 0 && !$GLOBALS['mails'] && !$GLOBALS['ai_requests'] && isset($GLOBALS['scheduled']['achord_inquiry_screen_now' . json_encode([$fid, '192.0.2.120'])]), '提交立刻返回成功，AI 和通知交给后台（IP 跟着定时事件走）');
 check(!isset($GLOBALS['meta'][$fid]['_screen_ip']) && ($GLOBALS['meta'][$fid]['_ip'] ?? '') === '', '没开「保存 IP」时询盘里不写 IP');
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['store_ip'] = '1';
 $_SERVER['REMOTE_ADDR'] = '10.0.0.1';

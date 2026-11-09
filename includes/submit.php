@@ -24,7 +24,7 @@ function achord_inquiry_boot(): void
     add_action('admin_post_nopriv_' . achord_inquiry_name('submit_inquiry'), 'achord_inquiry_handle');
     add_action('wp_enqueue_scripts', 'achord_inquiry_enqueue_script');
     add_action('achord_inquiry_unscreened', 'achord_inquiry_screen_saved');
-    add_action('achord_inquiry_screen_now', 'achord_inquiry_screen_saved');
+    add_action('achord_inquiry_screen_now', 'achord_inquiry_screen_saved', 10, 2);
     do_action('achord_inquiry_booted');
 }
 
@@ -210,7 +210,8 @@ function achord_inquiry_quick_answer(int $post_id, array $fields): int
 function achord_inquiry_respond_then_screen(int $post_id, int $answer): void
 {
     if (!function_exists('fastcgi_finish_request') || !apply_filters('achord_inquiry_screen_after_response', true)) {
-        wp_schedule_single_event(time(), 'achord_inquiry_screen_now', [$post_id]);
+        // The sender's IP rides in the event itself (WP-Cron's queue, gone once it runs), never in the inquiry.
+        wp_schedule_single_event(time(), 'achord_inquiry_screen_now', [$post_id, achord_inquiry_client_ip()]);
         if (function_exists('spawn_cron')) {
             spawn_cron();
         }
@@ -240,7 +241,8 @@ function achord_inquiry_respond_then_screen(int $post_id, int $answer): void
 
 /**
  * Screen a saved inquiry and send its notifications: after the answer (with the sender's IP from memory), from WP-Cron or
- * as the safety net (with the saved IP when 保存 IP is on, else none: the IP lookups are skipped). Once only:
+ * as the safety net. The sender's IP comes from memory or the cron event's own arguments; the safety net has only the
+ * saved IP (保存 IP on) or none, and then skips the IP lookups. Once only:
  * finished, deleted, not an inquiry, or decided by an administrator are left alone; one whose screening started but
  * never finished (the run died) goes to sales as an ordinary inquiry.
  */
@@ -334,7 +336,6 @@ function achord_inquiry_finish_screened_locked(int $post_id, array $fields): int
     if (achord_inquiry_manually_decided($post_id)) {
         update_post_meta($post_id, '_screen_done', '1');
         wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
-        wp_clear_scheduled_hook('achord_inquiry_screen_now', [$post_id]);
         return 0;
     }
     $verdict = (string) ($fields['screen_verdict'] ?? '');
@@ -356,7 +357,6 @@ function achord_inquiry_finish_screened_locked(int $post_id, array $fields): int
     }
     update_post_meta($post_id, '_screen_done', '1');
     wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
-    wp_clear_scheduled_hook('achord_inquiry_screen_now', [$post_id]);
     return in_array($verdict, ['spam', 'suspect'], true) ? 0 : $post_id;
 }
 

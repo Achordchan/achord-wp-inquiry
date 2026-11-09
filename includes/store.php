@@ -219,7 +219,6 @@ function achord_inquiry_set_invalid_locked(int $post_id, string $reason, bool $a
         if (get_post_meta($post_id, '_blocked', true) === '') {
             update_post_meta($post_id, '_screen_done', '1');
             wp_clear_scheduled_hook('achord_inquiry_unscreened', [$post_id]);
-            wp_clear_scheduled_hook('achord_inquiry_screen_now', [$post_id]);
         }
         return;
     }
