@@ -677,7 +677,7 @@ $alert = $alerts ? json_decode($alerts[0]['args']['body'], true) : [];
 check(count($alerts) === 1 && $alerts[0]['url'] === 'https://alert.example.com/server' && $alerts[0]['args']['headers']['Authorization'] === 'Bearer ' . $secret && $alerts[0]['args']['blocking'] === false, '发信失败报给报警服务，带密钥、不等答复');
 check(($alert['kind'] ?? '') === 'mail_failed' && ($alert['inquiry'] ?? 0) === $r->data['id'] && !str_contains($alerts[0]['args']['body'], 'bob@client.test') && !str_contains($alerts[0]['args']['body'], 'Need a crane'), '报警只带询盘编号和原因，不带客户资料');
 $r = submit(['name' => 'Cy', 'email' => 'cy@client.test', 'product' => 'SQ5 Crane', 'message' => 'Need a crane']);
-check((int) get_option(ACHORD_INQUIRY_MAIL_OK, 0) > 0, '发成功也记下时间');
+check(is_float(get_option(ACHORD_INQUIRY_MAIL_OK, 0)) && get_option(ACHORD_INQUIRY_MAIL_OK, 0) > (get_option(ACHORD_INQUIRY_MAIL_FAIL)['at'] ?? 0), '发成功也记下时间（带微秒，分得出同一秒里的先后）');
 check((get_option(ACHORD_INQUIRY_MAIL_FAIL)['at'] ?? 0) > 0 && str_contains(get_option(ACHORD_INQUIRY_MAIL_FAIL)['reason'] ?? '', 'SMTP'), '发成功不盖掉之前记下的失败');
 $health = achord_inquiry_health();
 check($health['mail_ok_at'] > 0 && $health['mail_fail_at'] > 0 && str_contains($health['mail_fail_reason'], 'SMTP'), '自检答复里成功、失败两边都在');

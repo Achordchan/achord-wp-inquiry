@@ -432,17 +432,26 @@ export async function flush(env, { now = Math.floor(Date.now() / 1000), fetcher 
 }
 
 /** 站点仓库最近两天的报警流程运行（标题是「表单报警 <指纹>」）；查不到返回 null，这次先不核对。 */
+// 一次最多翻这么多页（每页 100 条）；翻不完就当这次查不全，不下「没跑」的结论。
+const RUN_PAGES = 10;
 async function recentRuns(env, siteCfg, now, fetcher) {
   const since = new Date((now - 2 * 24 * HOUR) * 1000).toISOString().slice(0, 19) + 'Z';
   try {
     return await withDeadline(outboundMs(env), async (signal) => {
-      const response = await fetcher(`https://api.github.com/repos/${siteCfg.repo}/actions/workflows/form-alert.yml/runs?event=workflow_dispatch&per_page=100&created=${encodeURIComponent('>=' + since)}`, {
-        headers: { Authorization: `Bearer ${env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'achord-form-alert' },
-        signal,
-      });
-      if (response.status !== 200) return null;
-      const data = await response.json();
-      return Array.isArray(data?.workflow_runs) ? data.workflow_runs : null;
+      const runs = [];
+      for (let page = 1; page <= RUN_PAGES; page++) {
+        const response = await fetcher(`https://api.github.com/repos/${siteCfg.repo}/actions/workflows/form-alert.yml/runs?event=workflow_dispatch&per_page=100&page=${page}&created=${encodeURIComponent('>=' + since)}`, {
+          headers: { Authorization: `Bearer ${env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'achord-form-alert' },
+          signal,
+        });
+        if (response.status !== 200) return null;
+        const data = await response.json();
+        if (!Array.isArray(data?.workflow_runs)) return null;
+        runs.push(...data.workflow_runs);
+        // 翻到最后一页（不满 100 条，或已数够总数）才算查全。
+        if (data.workflow_runs.length < 100 || runs.length >= Number(data.total_count || 0)) return runs;
+      }
+      return null;
     });
   } catch {
     return null;
@@ -550,7 +559,8 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
     if (health.recipient_ok === false) found.push({ kind: 'check_config', detail: '询盘设置里的收件邮箱无效或没填', health });
     if (health.turnstile_on && health.turnstile_ready === false) found.push({ kind: 'check_config', detail: '启用了人机验证但密钥没填全', health });
     if (health.dingtalk === false) found.push({ kind: 'check_config', detail: '钉钉插件没有启用', health });
-    if (health.mail_fail_at && health.mail_fail_at > (health.mail_ok_at || 0)) found.push({ kind: 'check_mail', detail: health.mail_fail_reason || '最近一次通知邮件发送失败', health });
+    // 时间带小数（微秒）分先后；万一一样，按失败算，宁可多报一次。
+    if (health.mail_fail_at && health.mail_fail_at >= (health.mail_ok_at || 0)) found.push({ kind: 'check_mail', detail: health.mail_fail_reason || '最近一次通知邮件发送失败', health });
     const quietHours = Number(siteCfg.quiet_hours) || 0;
     // 还没有过一条有效询盘的站（新站）：从第一次自检正常那天算起。
     const since = health.last_inquiry_at || (await monitoringSince(env, site, now));
@@ -588,6 +598,12 @@ async function runSelfChecks(env, ctxNow, fetcher = fetch, serial = (fn) => fn()
   return results;
 }
 
+/** 访客报来的页面只收成网址路径：去掉查询参数，只留路径里会出现的字符（中文等已被浏览器转成 %XX），Issue 里不会变成链接文字或 @ 提醒。 */
+function safePath(value) {
+  const path = String(value || '').split(/[?#]/)[0];
+  return path.startsWith('/') ? path.replace(/[^\w\-./~%]/g, '').slice(0, 200) : '';
+}
+
 function cors(origin) {
   return { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400', Vary: 'Origin' };
 }
@@ -615,7 +631,7 @@ export async function handleReport(request, env, { now = Math.floor(Date.now() /
     form: body.form === 'catalog' ? 'catalog' : 'inquiry',
     status: Number(body.status) || 0,
     detail: redact(body.detail),
-    page: redact(String(body.page || '').split('?')[0], 200),
+    page: safePath(body.page),
     ua: String(body.ua || '').slice(0, 250),
     lang: redact(body.lang, 20),
     width: Number(body.width) || 0,

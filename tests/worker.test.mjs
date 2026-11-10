@@ -116,6 +116,17 @@ check(res.status === 200 && res.headers.get('Access-Control-Allow-Origin') === '
 check(!JSON.stringify(sentPayload).includes('ana@client.test') && !JSON.stringify(sentPayload).includes('gclid') && !JSON.stringify(sentPayload).includes('203.0.113.9'), '报出去的内容没有邮箱、广告参数、IP');
 for (let i = 0; i < 10; i++) res = await handleReport(req({ ...browserBody, kind: 'stuck' }), env, { now: T0, fetcher: net.fetcher });
 check(res.status === 429, '同一 IP 每小时超过 10 条就拒收');
+{
+  // 访客报来的页面只收成路径：链接写法、@提醒、尖括号都去掉，Issue 里不会出现可点的冒充链接或通知。
+  const e2 = makeEnv();
+  const n2 = fakeNet();
+  await handleReport(req({ ...browserBody, kind: 'server_error', page: '/p/[click](https://attacker.example)<b>@octocat' }, 'https://bobliftcrane.com', '198.51.100.4'), e2, { now: T0, fetcher: n2.fetcher });
+  const issue = JSON.parse(JSON.parse(ghCalls(n2.calls)[0].init.body).inputs.payload);
+  check(!issue.body.includes('](') && !issue.body.includes('@octocat') && !issue.body.includes('<b>') && issue.body.includes('https://bobliftcrane.com/p/clickhttps//attacker.examplebocto'), '访客报来的页面只留路径字符，不带链接写法和 @ 提醒');
+  await handleReport(req({ ...browserBody, kind: 'server_error', detail: 'other', page: 'https://attacker.example/x' }, 'https://bobliftcrane.com', '198.51.100.5'), e2, { now: T0, fetcher: n2.fetcher });
+  const issue2 = JSON.parse(JSON.parse(ghCalls(n2.calls)[1].init.body).inputs.payload);
+  check(!issue2.body.includes('attacker'), '不是以 / 开头的页面整个不要');
+}
 
 // 服务器上报：要密钥。
 const serverReq = (auth, body) => new Request('https://form-alert.test/server', { method: 'POST', headers: { Authorization: auth }, body: JSON.stringify(body) });
@@ -150,6 +161,9 @@ check(problems[0]?.kind === 'check_secret', '站点没认出密钥：报 check_s
 net = siteNet({ 'boblift_inquiry_submit=1': () => new Response(JSON.stringify({ success: true, data: { monitor: true, health: { recipient_ok: false, dingtalk: true, mail_ok_at: 10, mail_fail_at: 20, mail_fail_reason: 'SMTP down', last_inquiry_at: T0 - 100 * 3600 } } })) });
 problems = await selfCheck(env, 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
 check(problems.map((p) => p.kind).join(',') === 'check_config,check_mail,check_quiet', '自检发现收件人无效、最近发信失败、72 小时没询盘');
+net = siteNet({ 'boblift_inquiry_submit=1': () => new Response(JSON.stringify({ success: true, data: { monitor: true, health: { recipient_ok: true, dingtalk: true, mail_ok_at: 1794299000.25, mail_fail_at: 1794299000.75, mail_fail_reason: 'SMTP down', last_inquiry_at: T0 - 100 } } })) });
+problems = await selfCheck(env, 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
+check(problems.map((p) => p.kind).join(',') === 'check_mail', '同一秒里先发成、后发失败：按微秒分得出，照样报发信失败');
 
 // GitHub 一时出错反复重试：同一个问题当天只占一个新开名额。
 env = makeEnv();
@@ -235,6 +249,29 @@ net = fakeNet({ '/runs?': () => new Response('rate limited', { status: 403 }) })
 await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
 const unsettled = JSON.parse([...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'))[1]);
 check(ghCalls(net.calls).length === 0 && unsettled.awaiting, '查不了运行记录：这次先不核对，也不乱重发');
+
+// 运行记录超过一页：翻页找到这次运行，不误判成没跑而重发。
+env = makeEnv();
+net = fakeNet();
+await intake(env, event, { now: T0, fetcher: net.fetcher });
+fpNow = await fpOf();
+{
+  const filler = Array.from({ length: 100 }, (_, i) => ({ display_title: `表单报警 other${i}`, status: 'completed', conclusion: 'success', created_at: runAt }));
+  net = fakeNet({ '/runs?': (url) => new Response(JSON.stringify(String(url).includes('page=1&') ? { total_count: 101, workflow_runs: filler } : { total_count: 101, workflow_runs: [{ display_title: `表单报警 ${fpNow}`, status: 'completed', conclusion: 'success', created_at: runAt }] }), { status: 200 }) });
+  await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
+  const st = JSON.parse([...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'))[1]);
+  check(ghCalls(net.calls).length === 0 && !st.awaiting && net.calls.some((c) => c.url.includes('page=2&')), '运行记录翻到第二页找到这次：放下，不重发');
+}
+env = makeEnv();
+net = fakeNet();
+await intake(env, event, { now: T0, fetcher: net.fetcher });
+{
+  const filler = Array.from({ length: 100 }, (_, i) => ({ display_title: `表单报警 other${i}`, status: 'completed', conclusion: 'success', created_at: runAt }));
+  net = fakeNet({ '/runs?': () => new Response(JSON.stringify({ total_count: 5000, workflow_runs: filler }), { status: 200 }) });
+  await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
+  const st = JSON.parse([...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'))[1]);
+  check(ghCalls(net.calls).length === 0 && st.awaiting, '运行记录多到翻不完：当这次查不全，不重发');
+}
 
 // 上一批还没核对完，不发下一批：免得两批的次数搅在一起，一批失败另一批成功时漏报或重报。
 env = makeEnv();

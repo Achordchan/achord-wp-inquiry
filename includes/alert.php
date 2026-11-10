@@ -135,12 +135,12 @@ function achord_inquiry_last_mail_error(?string $set = null): string
 function achord_inquiry_mail_result(bool $sent, int $post_id, string $lead_type = ''): void
 {
     if ($sent) {
-        update_option(ACHORD_INQUIRY_MAIL_OK, time(), false);
+        update_option(ACHORD_INQUIRY_MAIL_OK, microtime(true), false); // 带微秒：同一秒里先成后败也分得出先后
         return;
     }
     $reason = achord_inquiry_alert_redact(achord_inquiry_last_mail_error() ?: 'wp_mail 返回失败', 200);
     // 失败时间和原因放同一个选项里一次写入，读到的时间和原因总是同一次失败的。
-    update_option(ACHORD_INQUIRY_MAIL_FAIL, ['at' => time(), 'reason' => $reason], false);
+    update_option(ACHORD_INQUIRY_MAIL_FAIL, ['at' => microtime(true), 'reason' => $reason], false);
     achord_inquiry_alert('mail_failed', $reason, ['inquiry' => $post_id, 'form' => $lead_type ?: 'inquiry']);
 }
 
@@ -186,8 +186,8 @@ function achord_inquiry_health(): array
         'turnstile_on' => $turnstile,
         'turnstile_ready' => !$turnstile || achord_inquiry_turnstile_enabled(),
         'dingtalk' => function_exists('achord_dingtalk_dispatch'),
-        'mail_ok_at' => (int) get_option(ACHORD_INQUIRY_MAIL_OK, 0),
-        'mail_fail_at' => (int) ($fail['at'] ?? 0),
+        'mail_ok_at' => (float) get_option(ACHORD_INQUIRY_MAIL_OK, 0),
+        'mail_fail_at' => (float) ($fail['at'] ?? 0),
         'mail_fail_reason' => (string) ($fail['reason'] ?? ''),
         'last_inquiry_at' => $latest_at,
     ];
