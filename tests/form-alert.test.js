@@ -121,6 +121,16 @@ const response = (status, body) => ({ status, clone: () => ({ text: () => Promis
   r.winListeners.online();
   check(r.beacons.length === 1 && r.beacons[0].body.kind === 'network', '网络回来后补发');
 
+  // 主题自己超时中断（没离开页面）：报 aborted；访客离开页面时的中断：不报。
+  const abortError = () => Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+  r = run({ reply: () => Promise.reject(abortError()) });
+  try { await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' }); } catch { /* 主题照样拿到错误 */ }
+  check(r.beacons[0]?.body.kind === 'aborted', '没离开页面却被中断：报 aborted');
+  r = run({ reply: () => Promise.reject(abortError()) });
+  r.winListeners.pagehide();
+  try { await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' }); } catch { /* 主题照样拿到错误 */ }
+  check(r.beacons.length === 0, '离开页面时的中断：不报');
+
   // 同一页同一种错误只报一次，一页最多报 3 次。
   r = run({ reply: response(500, '{}') });
   for (let i = 0; i < 4; i++) await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' });

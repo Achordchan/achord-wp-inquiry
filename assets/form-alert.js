@@ -6,6 +6,7 @@
  * - 盯着提交地址里带 config.watch 片段的 POST（插件给的是询盘和目录表单）：断网、服务器 5xx、403、返回的不是 JSON、
  *   保存失败就上报；访客自己漏填（requiredFields）不报；人机验证没过、提交太频繁照报，由报警服务按访客数决定要不要开
  *   Issue（一个人没过不算，几个人都没过就是验证坏了）。
+ * - 没离开页面、请求却被中断（主题自己等太久超时）：报 aborted；访客跳走或关页时的中断不报。
  * - 不用脚本的表单失败时会回到原页带 ?inquiry=error|verification，打开页面时报。
  * - 验证码脚本（challenges.cloudflare.com）加载不出来也报。
  * - 点了提交、脚本报错、之后一直没发出请求：报「卡住」。
@@ -45,6 +46,11 @@
 
   // 断网时没发出去的报告，网络恢复后补发；最多留 3 条，离开页面就没了。
   const waiting = [];
+  // 访客正在离开页面（跳转、关闭）：这时浏览器中断请求是正常的，不报。
+  let leaving = false;
+  window.addEventListener('pagehide', () => { leaving = true; });
+  window.addEventListener('beforeunload', () => { leaving = true; });
+  window.addEventListener('pageshow', () => { leaving = false; });
 
   const report = (kind, detail = '', extra = {}) => {
     kind = String(kind || '').replace(/[^a-z_]/g, '').slice(0, 30);
@@ -139,18 +145,20 @@
         step(`服务器答复 ${response.status}（${Math.round(elapsed / 100) / 10}s）${verdict ? '：' + verdict[0] : ''}`);
         if (verdict) report(verdict[0], verdict[1], { form, status: response.status, elapsed });
       }).catch((error) => {
-        // 答复头到了、内容没收完（连接中途断了）：主题那边也读不到，算没发成功。
-        if (error?.name === 'AbortError') return;
-        step(`答复没收完整（${response.status}）：${error?.message || error}`);
-        report('network', `答复没收完整：${String(error?.message || error || '')}`, { form, status: response.status, elapsed });
+        // 答复头到了、内容没收完（连接中途断了，或主题等太久中断了）：主题那边也读不到，算没发成功。访客离开页面不算。
+        if (leaving) return;
+        const aborted = error?.name === 'AbortError';
+        step(`答复没收完整（${response.status}）：${aborted ? '被中断' : error?.message || error}`);
+        report(aborted ? 'aborted' : 'network', `答复没收完整：${aborted ? '被中断（多半是等太久超时）' : String(error?.message || error || '')}`, { form, status: response.status, elapsed: Date.now() - t0 });
       });
       return response;
     }, (error) => {
       const elapsed = Date.now() - t0;
-      // 访客自己离开页面时的中断不算。
-      if (error?.name !== 'AbortError') {
-        step(`请求没发出去（${Math.round(elapsed / 100) / 10}s）：${error?.message || error}`);
-        report('network', String(error?.message || error || ''), { form, elapsed });
+      // 访客自己离开页面时浏览器中断请求，不算；没离开页面却被中断，多半是主题等太久自己超时了，要报。
+      if (!leaving) {
+        const aborted = error?.name === 'AbortError';
+        step(`请求${aborted ? '被中断' : '没发出去'}（${Math.round(elapsed / 100) / 10}s）：${error?.message || error}`);
+        report(aborted ? 'aborted' : 'network', aborted ? `请求被中断（等了 ${Math.round(elapsed / 100) / 10} 秒，多半是超时）` : String(error?.message || error || ''), { form, elapsed });
       }
       throw error;
     });

@@ -14,6 +14,7 @@
  * 绑定（wrangler.toml）：Durable Object DESK（类 AlertDesk）；变量 SITES（JSON，见 wrangler.example.toml）。
  * 密钥（wrangler secret put）：GITHUB_TOKEN（只授权站点仓库 Actions: write）、SITE_SECRETS（JSON：{"域名": "报警密钥"}）、
  *   DINGTALK_WEBHOOK、DINGTALK_SECRET（机器人开了「加签」才要）。
+ * 可选变量：OUTBOUND_MS（往 GitHub、钉钉发请求的时限，默认 10000）、SELFCHECK_MS（每个站自检的时限，默认 60000）。
  */
 
 const HOUR = 3600;
@@ -21,6 +22,7 @@ const LABEL = '表单报警';
 // 访客浏览器能报的错误，和它们的中文说法。
 const KINDS = {
   network: '请求没发出去（断网或超时）',
+  aborted: '提交等太久被中断（主题超时）',
   server_error: '服务器出错',
   forbidden: '服务器拒绝（随机数过期或被拦截）',
   bad_response: '服务器返回的不是正常答复（可能是拦截页或报错页）',
@@ -50,6 +52,49 @@ const CHECK_KINDS = {
 // 单个访客失败不算故障，一小时内这么多位不同访客都失败才报。
 const CROWD = { verification: 3, rate_limited: 3 };
 const LIMITS = { perIpHour: 10, newIssuesPerSiteDay: 5, dingEvery: 6 * HOUR, keepState: 7 * 24 * HOUR };
+// 请求体上限（字节）：浏览器上报带 25 步足迹，16 KB 足够；服务器上报只有几个字段。
+const BODY_LIMIT = { '/report': 16 * 1024, '/server': 4 * 1024 };
+// 往 GitHub、钉钉发请求最多等这么久（毫秒），连读答复在内；超时算没发成，补报时再试，不卡住后面的报警。
+const OUTBOUND_MS = 10000;
+
+/** 边读边数，超过上限立即停，不把大请求整个读进内存。超过返回 null。 */
+export async function readLimited(request, limit) {
+  const declared = Number(request.headers.get('Content-Length'));
+  if (Number.isFinite(declared) && declared > limit) return null;
+  if (!request.body) return '';
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { all.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(all);
+}
+
+/** 给一次外发加时限：到点就中断请求，并当作失败。 */
+async function withDeadline(ms, work) {
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      work(controller.signal),
+      new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error(`超过 ${ms / 1000} 秒没回应`)); }, ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const outboundMs = (env) => Number(env.OUTBOUND_MS) || OUTBOUND_MS;
 
 const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', ...headers } });
 
@@ -171,7 +216,7 @@ async function bump(env, key, ttl) {
 }
 
 async function dispatchIssue(env, siteCfg, payload, fetcher) {
-  const response = await fetcher(`https://api.github.com/repos/${siteCfg.repo}/actions/workflows/form-alert.yml/dispatches`, {
+  return withDeadline(outboundMs(env), async (signal) => (await fetcher(`https://api.github.com/repos/${siteCfg.repo}/actions/workflows/form-alert.yml/dispatches`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env.GITHUB_TOKEN}`,
@@ -181,8 +226,8 @@ async function dispatchIssue(env, siteCfg, payload, fetcher) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ ref: siteCfg.branch || 'main', inputs: { fp: payload.fp, payload: JSON.stringify(payload).slice(0, 60000) } }),
-  });
-  return response.status === 204;
+    signal,
+  })).status === 204);
 }
 
 async function sendDingtalk(env, siteCfg, title, event, info, fetcher) {
@@ -209,16 +254,19 @@ async function sendDingtalk(env, siteCfg, title, event, info, fetcher) {
       ? 'GitHub Issue 这次没开成（报警服务每小时自动重试），先按这条提醒处理。'
       : `详情和失败前的操作见 GitHub Issue（1–2 分钟内生成）：[打开](${issues})`,
   ].filter((line, i, all) => line !== '' || (all[i - 1] !== '' && i > 0));
-  const response = await fetcher(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ msgtype: 'markdown', markdown: { title: `${siteCfg.label}询盘表单报警`, text: lines.join('\n') } }),
+  return withDeadline(outboundMs(env), async (signal) => {
+    const response = await fetcher(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msgtype: 'markdown', markdown: { title: `${siteCfg.label}询盘表单报警`, text: lines.join('\n') } }),
+      signal,
+    });
+    try {
+      return (await response.json()).errcode === 0;
+    } catch {
+      return false;
+    }
   });
-  try {
-    return (await response.json()).errcode === 0;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -348,6 +396,10 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
   const secret = siteSecret(env, site);
   const ua = 'Mozilla/5.0 (compatible; BOB-LIFT form self-check; +https://github.com/Achordchan)';
   const problems = [];
+  // 报警服务这边没配好这个站的密钥：不提交（否则站点会当成真询盘收下、发邮件），直接报配置问题。
+  if (!secret) {
+    return [{ site, form: 'inquiry', source: 'selfcheck', kind: 'check_secret', status: 0, page: check.page ? new URL(check.page).pathname : '', detail: '报警服务里没有配好这个站的报警密钥（SITE_SECRETS 缺失、格式不对或不足 24 位），没有提交测试询盘' }];
+  }
   // 读答复内容：连接在中途断掉时 text() 会抛错，当成没收完整处理，不让错误跑出自检。
   const readText = async (response) => {
     try {
@@ -398,7 +450,8 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
     return found;
   };
   // 意外出错也当成提交失败报出来，不让一个站的错误打断别的站。
-  const safeAttempt = () => attempt().catch((error) => [{ kind: 'check_submit', status: 0, detail: `自检出错：${error?.message || error}` }]);
+  // 整个自检一次最多等 60 秒（页面、随机数、提交三步），站点卡住也不拖住后面的站。
+  const safeAttempt = () => withDeadline(Number(env.SELFCHECK_MS) || 60000, () => attempt()).catch((error) => [{ kind: 'check_submit', status: 0, detail: `自检出错：${error?.message || error}` }]);
   let found = await safeAttempt();
   // 一次失败可能是网络抖动：等一会儿再试一次，还不行才报。
   if (found.some((p) => ['check_page', 'check_nonce', 'check_submit'].includes(p.kind))) {
@@ -431,8 +484,8 @@ function cors(origin) {
 /** 访客浏览器发来的：只收认识的站、对得上的来源域名、规定的错误类型，限每个 IP 每小时 10 条。 */
 export async function handleReport(request, env, { now = Math.floor(Date.now() / 1000), fetcher = fetch } = {}) {
   const origin = request.headers.get('Origin') || '';
-  const text = await request.text();
-  if (text.length > 20000) return json({ ok: false }, 413);
+  const text = await readLimited(request, BODY_LIMIT['/report']);
+  if (text === null) return json({ ok: false }, 413);
   let body;
   try { body = JSON.parse(text); } catch { return json({ ok: false }, 400); }
   const site = String(body.site || '');
@@ -467,7 +520,9 @@ export async function handleReport(request, env, { now = Math.floor(Date.now() /
 /** 站点服务器发来的：要带该站的报警密钥。 */
 export async function handleServer(request, env, { now = Math.floor(Date.now() / 1000), fetcher = fetch } = {}) {
   let body;
-  try { body = JSON.parse(await request.text()); } catch { return json({ ok: false }, 400); }
+  const text = await readLimited(request, BODY_LIMIT['/server']);
+  if (text === null) return json({ ok: false }, 413);
+  try { body = JSON.parse(text); } catch { return json({ ok: false }, 400); }
   const site = String(body.site || '');
   const secret = siteSecret(env, site);
   const given = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
@@ -551,7 +606,12 @@ export default {
     if (!open) return json({ ok: false }, 404);
     const headers = new Headers(request.headers);
     headers.set('X-Desk-Country', String(request.cf?.country || ''));
-    return desk(env).fetch(new Request(request, { headers }));
+    headers.delete('Content-Length');
+    if (request.method !== 'POST') return desk(env).fetch(new Request(request, { headers }));
+    // 先在入口限量读完请求体，超大的直接拒，不转给 AlertDesk（它一个服务两个站，不能被大请求拖垮）。
+    const body = await readLimited(request, BODY_LIMIT[url.pathname]);
+    if (body === null) return json({ ok: false }, 413);
+    return desk(env).fetch(new Request(request.url, { method: 'POST', headers, body }));
   },
   // 每小时一次（wrangler.toml 的 crons）：补报攒下的次数；UTC 01 点（新加坡 09 点）那次再做自检。
   async scheduled(controller, env, ctx) {

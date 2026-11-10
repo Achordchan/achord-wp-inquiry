@@ -94,6 +94,8 @@ let res = await handleReport(req(browserBody, 'https://evil.test'), env, { now: 
 check(res.status === 403, '别的域名发来的不收');
 res = await handleReport(req({ ...browserBody, kind: 'made_up' }), env, { now: T0, fetcher: net.fetcher });
 check(res.status === 400, '不认识的错误类型不收');
+res = await handleReport(req({ ...browserBody, kind: 'aborted' }, 'https://bobliftcrane.com', '203.0.113.77'), env, { now: T0, fetcher: net.fetcher });
+check(res.status === 200, '「提交被中断」这种类型收下');
 res = await handleReport(req(browserBody), env, { now: T0, fetcher: net.fetcher });
 const sentPayload = JSON.parse(JSON.parse(ghCalls(net.calls)[0].init.body).inputs.payload);
 check(res.status === 200 && res.headers.get('Access-Control-Allow-Origin') === 'https://bobliftcrane.com', '本站发来的收下，带跨域头');
@@ -209,6 +211,29 @@ await worker.fetch(outside, stubEnv);
 check(forwarded.length === 1 && forwarded[0].headers.get('X-Desk-Country') === 'KE', '入口转给 AlertDesk，国家用 Cloudflare 给的');
 res = await worker.fetch(new Request('https://form-alert.test/cron', { method: 'POST' }), stubEnv);
 check(res.status === 404 && forwarded.length === 1, '/cron 只能由定时任务调，外面调不到');
+
+// 请求体太大：边读边数，超过就拒，不转给 AlertDesk。
+const huge = 'x'.repeat(40 * 1024);
+res = await handleReport(new Request('https://form-alert.test/report', { method: 'POST', headers: { Origin: 'https://bobliftcrane.com' }, body: huge }), makeEnv(), { now: T0, fetcher: fakeNet().fetcher });
+check(res.status === 413, '浏览器上报超过 16 KB：拒收');
+res = await handleServer(new Request('https://form-alert.test/server', { method: 'POST', body: huge }), makeEnv(), { now: T0, fetcher: fakeNet().fetcher });
+check(res.status === 413, '服务器上报超过 4 KB：没验密钥就先拒收');
+const streamed = new Request('https://form-alert.test/report', { method: 'POST', headers: { Origin: 'https://bobliftcrane.com' }, body: new ReadableStream({ start(c) { for (let i = 0; i < 40; i++) c.enqueue(new TextEncoder().encode('x'.repeat(1024))); c.close(); } }), duplex: 'half' });
+forwarded.length = 0;
+res = await worker.fetch(streamed, stubEnv);
+check(res.status === 413 && forwarded.length === 0, '入口：没写长度的大请求边读边数，超了就拒，不转发');
+
+// GitHub、钉钉卡住不回：到时限算没发成，不拖住后面的报警。
+env = { ...makeEnv(), OUTBOUND_MS: 30 };
+net = fakeNet({ 'api.github.com': () => new Promise(() => {}), dingtalk: () => new Promise(() => {}) });
+const t1 = Date.now();
+check(await intake(env, event, { now: T0, fetcher: net.fetcher }) === 'held' && Date.now() - t1 < 1000, 'GitHub、钉钉卡住：到时限就放弃，记下待补报');
+check(net.calls.every((c) => c.init.signal), '外发请求都带中断信号');
+
+// 报警服务没配好该站密钥：不提交测试询盘，直接报。
+net = siteNet();
+problems = await selfCheck({ ...makeEnv(), SITE_SECRETS: '{}' }, 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
+check(problems[0]?.kind === 'check_secret' && net.calls.length === 0, '没配密钥：不提交，报 check_secret');
 
 // 其他。
 check(describeUa('Mozilla/5.0 (Linux; Android 14) AppleWebKit Chrome/131.0 Mobile Safari/537.36') === 'Chrome 131 / Android 14', '浏览器说法');
