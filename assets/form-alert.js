@@ -121,7 +121,12 @@
         const verdict = classify(response.status, text);
         step(`服务器答复 ${response.status}（${Math.round(elapsed / 100) / 10}s）${verdict ? '：' + verdict[0] : ''}`);
         if (verdict) report(verdict[0], verdict[1], { form, status: response.status, elapsed });
-      }).catch(() => {});
+      }).catch((error) => {
+        // 答复头到了、内容没收完（连接中途断了）：主题那边也读不到，算没发成功。
+        if (error?.name === 'AbortError') return;
+        step(`答复没收完整（${response.status}）：${error?.message || error}`);
+        report('network', `答复没收完整：${String(error?.message || error || '')}`, { form, status: response.status, elapsed });
+      });
       return response;
     }, (error) => {
       const elapsed = Date.now() - t0;

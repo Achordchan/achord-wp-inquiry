@@ -99,6 +99,12 @@ const response = (status, body) => ({ status, clone: () => ({ text: () => Promis
   try { await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' }); } catch { thrown = true; }
   check(thrown && r.beacons[0]?.body.kind === 'network' && r.beacons[0]?.body.detail === 'Failed to fetch', '断网：上报并照样把错误交给主题');
 
+  // 答复头到了、内容没收完：报 network，主题照样拿到原答复。
+  r = run({ reply: { status: 200, clone: () => ({ text: () => Promise.reject(new TypeError('network error')) }) } });
+  const got = await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' });
+  await flush();
+  check(got.status === 200 && r.beacons[0]?.body.kind === 'network' && r.beacons[0]?.body.status === 200 && String(r.beacons[0]?.body.detail).includes('答复没收完整'), '答复没收完整：上报 network');
+
   // 同一页同一种错误只报一次，一页最多报 3 次。
   r = run({ reply: response(500, '{}') });
   for (let i = 0; i < 4; i++) await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' });

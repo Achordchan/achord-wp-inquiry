@@ -1,5 +1,5 @@
-// node tests/worker.test.mjs：用假的 KV、假的 GitHub 和钉钉跑 monitor/worker.js。
-import worker, { intake, flush, selfCheck, handleReport, handleServer, compose, describeUa } from '../monitor/worker.js';
+// node tests/worker.test.mjs：用假的 KV、假的 Durable Object 存储、假的 GitHub 和钉钉跑 monitor/worker.js。
+import worker, { intake, flush, selfCheck, handleReport, handleServer, compose, describeUa, AlertDesk } from '../monitor/worker.js';
 
 let failures = 0;
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) failures++; };
@@ -134,6 +134,59 @@ check(problems[0]?.kind === 'check_secret', '站点没认出密钥：报 check_s
 net = siteNet({ 'boblift_inquiry_submit=1': () => new Response(JSON.stringify({ success: true, data: { monitor: true, health: { recipient_ok: false, dingtalk: true, mail_ok_at: 10, mail_fail_at: 20, mail_fail_reason: 'SMTP down', last_inquiry_at: T0 - 100 * 3600 } } })) });
 problems = await selfCheck(env, 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
 check(problems.map((p) => p.kind).join(',') === 'check_config,check_mail,check_quiet', '自检发现收件人无效、最近发信失败、72 小时没询盘');
+
+// GitHub 一时出错反复重试：同一个问题当天只占一个新开名额。
+env = makeEnv();
+net = fakeNet({ 'api.github.com': () => new Response('bad', { status: 502 }) });
+await intake(env, event, { now: T0, fetcher: net.fetcher });
+for (let i = 1; i <= 6; i++) await flush(env, { now: T0 + i * 3700, fetcher: net.fetcher });
+const capDay = new Date((T0 + 6 * 3700) * 1000).toISOString().slice(0, 10) === new Date(T0 * 1000).toISOString().slice(0, 10);
+check(!capDay || (await env.ALERTS.get(`cap:bobliftcrane.com:${new Date(T0 * 1000).toISOString().slice(0, 10)}`)) === '1', '重试不重复占名额');
+check(await intake(env, { ...event, kind: 'network', detail: 'other' }, { now: T0 + 10, fetcher: fakeNet().fetcher }) === 'sent', '别的问题照样能新开');
+
+// GitHub 请求直接抛错（断网）：先存下，补报时再发；钉钉抛错不影响 Issue 记成已发。
+env = makeEnv();
+net = fakeNet({ 'api.github.com': () => { throw new TypeError('network down'); } });
+check(await intake(env, event, { now: T0, fetcher: net.fetcher }) === 'held', 'GitHub 断网：不丢，记下待补报');
+net = fakeNet({ dingtalk: () => { throw new TypeError('ding down'); } });
+await flush(env, { now: T0 + 60, fetcher: net.fetcher });
+const afterDing = [...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'));
+check(ghCalls(net.calls).length === 1 && JSON.parse(afterDing[1]).lastSent === T0 + 60, '钉钉断网：Issue 照样记成已发，不会重复开');
+
+// AlertDesk：同一时刻涌进来的同一个问题排队处理，只开一个 Issue，次数一条不丢。
+class FakeStorage {
+  constructor() { this.map = new Map(); }
+  // 每次读写都让出一下，模拟真实存储的等待，让并发请求有机会交错。
+  async tick() { await new Promise((r) => setImmediate(r)); }
+  async get(key) { await this.tick(); return this.map.get(key); }
+  async put(key, value) { await this.tick(); this.map.set(key, structuredClone(value)); }
+  async list({ prefix = '' } = {}) { await this.tick(); return new Map([...this.map].filter(([k]) => k.startsWith(prefix))); }
+  async delete(keys) { await this.tick(); for (const k of [].concat(keys)) this.map.delete(k); }
+}
+net = fakeNet({ 'api.github.com': async () => { await new Promise((r) => setTimeout(r, 5)); return new Response(null, { status: 204 }); } });
+const storage = new FakeStorage();
+const { ALERTS: _unused, ...deskEnv } = makeEnv();
+const deskObj = new AlertDesk({ storage }, deskEnv, { fetcher: net.fetcher });
+const burst = await Promise.all(Array.from({ length: 8 }, (_, i) => deskObj.fetch(req({ ...browserBody, kind: 'server_error', status: 502, detail: 'Bad Gateway' }, 'https://bobliftcrane.com', `198.51.100.${i}`))));
+const outcomes = await Promise.all(burst.map((r) => r.json()));
+const fpRow = [...storage.map.entries()].find(([k]) => k.startsWith('fp:'))[1];
+check(ghCalls(net.calls).length === 1 && outcomes.filter((o) => o.result === 'sent').length === 1 && outcomes.filter((o) => o.result === 'held').length === 7, '8 条同时到：只开 1 个 Issue，其余 7 条计数');
+check(JSON.parse(fpRow.v).pending === 7 && JSON.parse(fpRow.v).visitors.length === 7, '7 条计数和 7 位访客一个不丢');
+storage.map.set('ip:old:1', { v: '3', exp: 1 });
+await deskObj.fetch(new Request(`https://desk/cron?now=${Math.floor(Date.now() / 1000)}&selfcheck=0`, { method: 'POST' }));
+check(!storage.map.has('ip:old:1'), '每小时顺手清掉过期的记录');
+res = await deskObj.fetch(new Request('https://desk/health'));
+check(res.status === 200, 'AlertDesk 回答 /health');
+
+// 入口 Worker：转给 AlertDesk，带上访客国家（访客自己伪造的头被覆盖）；内部的 /cron 不对外。
+const forwarded = [];
+const stubEnv = { ...makeEnv(), DESK: { idFromName: (n) => n, get: () => ({ fetch: async (r) => { forwarded.push(r); return new Response('{}'); } }) } };
+const outside = new Request('https://form-alert.test/report', { method: 'POST', headers: { Origin: 'https://bobliftcrane.com', 'X-Desk-Country': 'XX' }, body: '{}' });
+Object.defineProperty(outside, 'cf', { value: { country: 'KE' } });
+await worker.fetch(outside, stubEnv);
+check(forwarded.length === 1 && forwarded[0].headers.get('X-Desk-Country') === 'KE', '入口转给 AlertDesk，国家用 Cloudflare 给的');
+res = await worker.fetch(new Request('https://form-alert.test/cron', { method: 'POST' }), stubEnv);
+check(res.status === 404 && forwarded.length === 1, '/cron 只能由定时任务调，外面调不到');
 
 // 其他。
 check(describeUa('Mozilla/5.0 (Linux; Android 14) AppleWebKit Chrome/131.0 Mobile Safari/537.36') === 'Chrome 131 / Android 14', '浏览器说法');

@@ -8,7 +8,10 @@
  *   POST /server  站点服务器上报（Authorization: Bearer <该站报警密钥>）
  *   GET  /health  最近一次自检结果
  *
- * 绑定（wrangler.toml）：KV ALERTS；变量 SITES（JSON，见 wrangler.example.toml）。
+ * 所有计数和状态放在一个 Durable Object（AlertDesk）里，收报、补报、自检结果都排成一队逐条处理：
+ * 故障爆发时几十条同时到，也不会两条同时读到「还没报过」而重复开 Issue、互相覆盖计数（KV 做不到这点）。
+ *
+ * 绑定（wrangler.toml）：Durable Object DESK（类 AlertDesk）；变量 SITES（JSON，见 wrangler.example.toml）。
  * 密钥（wrangler secret put）：GITHUB_TOKEN（只授权站点仓库 Actions: write）、SITE_SECRETS（JSON：{"域名": "报警密钥"}）、
  *   DINGTALK_WEBHOOK、DINGTALK_SECRET（机器人开了「加签」才要）。
  */
@@ -160,7 +163,7 @@ async function readState(env, key) {
 }
 const writeState = (env, key, value, ttl = LIMITS.keepState) => env.ALERTS.put(key, JSON.stringify(value), { expirationTtl: ttl });
 
-/** 计数加一并返回新值（KV 不是严格计数器，限流够用）。 */
+/** 计数加一并返回新值（在 AlertDesk 的队里逐条执行，不会丢计数）。 */
 async function bump(env, key, ttl) {
   const current = Number(await env.ALERTS.get(key)) || 0;
   await env.ALERTS.put(key, String(current + 1), { expirationTtl: ttl });
@@ -246,23 +249,44 @@ export async function intake(env, event, { now = Math.floor(Date.now() / 1000), 
     await writeState(env, key, state);
     return 'held';
   }
-  if (!state.lastSent) {
-    const cap = await bump(env, `cap:${event.site}:${new Date(now * 1000).toISOString().slice(0, 10)}`, 2 * 24 * HOUR);
-    if (cap > LIMITS.newIssuesPerSiteDay) {
-      await writeState(env, key, state);
-      return 'capped';
-    }
+  if (!state.lastSent && !(await reserve(env, event.site, state, now))) {
+    await writeState(env, key, state);
+    return 'capped';
   }
   return (await send(env, siteCfg, key, fp, state, now, fetcher)) ? 'sent' : 'held';
+}
+
+/**
+ * 给还没开过 Issue 的问题占当天的新开名额（每站每天 5 个）。同一个问题当天只占一次：
+ * GitHub 暂时出错、反复重试时不会把名额耗光。名额满了返回 false。
+ */
+async function reserve(env, site, state, now) {
+  const day = new Date(now * 1000).toISOString().slice(0, 10);
+  if (state.reserved === day) return true;
+  const capKey = `cap:${site}:${day}`;
+  const used = Number(await env.ALERTS.get(capKey)) || 0;
+  if (used >= LIMITS.newIssuesPerSiteDay) return false;
+  await env.ALERTS.put(capKey, String(used + 1), { expirationTtl: 2 * 24 * HOUR });
+  state.reserved = day;
+  return true;
 }
 
 async function send(env, siteCfg, key, fp, state, now, fetcher) {
   const event = state.sample;
   const info = { now, count: state.pending, visitors: Math.max(1, state.visitors.length) };
   const text = compose(siteCfg, event, info);
-  const ok = await dispatchIssue(env, siteCfg, { fp, title: text.title, body: text.body, comment: text.comment, assignee: siteCfg.assignee || '' }, fetcher);
+  // 先存下这条（没发出去时每小时补报会接着试），再往外发；GitHub、钉钉哪个出错都不影响另一个、也不丢状态。
+  await writeState(env, key, state);
+  let ok = false;
+  try {
+    ok = await dispatchIssue(env, siteCfg, { fp, title: text.title, body: text.body, comment: text.comment, assignee: siteCfg.assignee || '' }, fetcher);
+  } catch {
+    ok = false;
+  }
   if (ok && (!state.lastDing || now - state.lastDing >= LIMITS.dingEvery)) {
-    if (await sendDingtalk(env, siteCfg, text.title, event, info, fetcher)) state.lastDing = now;
+    try {
+      if (await sendDingtalk(env, siteCfg, text.title, event, info, fetcher)) state.lastDing = now;
+    } catch { /* 钉钉不通：Issue 已开，6 小时内不再推，下次再试 */ }
   }
   if (ok) {
     state.lastSent = now;
@@ -284,12 +308,8 @@ export async function flush(env, { now = Math.floor(Date.now() / 1000), fetcher 
       if (!state || state.pending <= 0 || (state.lastSent && now - state.lastSent < HOUR)) continue;
       const [, site, fp] = name.split(':');
       if (!all[site]) continue;
-      if (!state.lastSent) {
-        // 当天新开的已到上限：等第二天。
-        const capKey = `cap:${site}:${new Date(now * 1000).toISOString().slice(0, 10)}`;
-        if ((Number(await env.ALERTS.get(capKey)) || 0) >= LIMITS.newIssuesPerSiteDay) continue;
-        await bump(env, capKey, 2 * 24 * HOUR);
-      }
+      // 当天新开的已到上限：等第二天。
+      if (!state.lastSent && !(await reserve(env, site, state, now))) continue;
       await send(env, all[site], name, fp, state, now, fetcher);
     }
     cursor = page.list_complete ? undefined : page.cursor;
@@ -353,15 +373,16 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
   return problems;
 }
 
-async function runSelfChecks(env, ctxNow, fetcher = fetch) {
+/** 每日自检所有站。访问站点不占队（要等十几秒），发现的问题和结果交给 serial 排队处理。 */
+async function runSelfChecks(env, ctxNow, fetcher = fetch, serial = (fn) => fn()) {
   const results = {};
   for (const [site, siteCfg] of Object.entries(sites(env))) {
     if (!siteCfg.check) continue;
     const problems = await selfCheck(env, site, siteCfg, { now: ctxNow, fetcher });
     results[site] = { at: ctxNow, ok: problems.length === 0, problems: problems.map((p) => `${kindText(p.kind)}：${redact(p.detail, 120)}`) };
-    for (const problem of problems) await intake(env, problem, { now: ctxNow, fetcher });
+    for (const problem of problems) await serial(() => intake(env, problem, { now: ctxNow, fetcher }));
   }
-  await env.ALERTS.put('selfcheck:last', JSON.stringify(results));
+  await serial(() => env.ALERTS.put('selfcheck:last', JSON.stringify(results)));
   return results;
 }
 
@@ -398,7 +419,8 @@ export async function handleReport(request, env, { now = Math.floor(Date.now() /
     width: Number(body.width) || 0,
     elapsed: Number(body.elapsed) || 0,
     steps: (Array.isArray(body.steps) ? body.steps : []).slice(-25).map((s) => redact(s, 160)),
-    country: request.cf?.country || '',
+    // 转进 AlertDesk 后 request.cf 没了，入口 Worker 把国家放在这个请求头里（访客自己带的会被覆盖）。
+    country: request.cf?.country || request.headers.get('X-Desk-Country') || '',
     visitor,
   };
   return json({ ok: true, result: await intake(env, event, { now, fetcher }) }, 200, headers);
@@ -417,6 +439,68 @@ export async function handleServer(request, env, { now = Math.floor(Date.now() /
   return json({ ok: true, result: await intake(env, event, { now, fetcher }) });
 }
 
+/** AlertDesk 的存储包成 KV 的样子（get/put/list，带过期），业务代码两边通用。 */
+export function deskStore(storage) {
+  const nowSec = () => Math.floor(Date.now() / 1000);
+  return {
+    async get(key, type) {
+      const row = await storage.get(key);
+      if (!row || (row.exp && row.exp <= nowSec())) return null;
+      return type === 'json' ? JSON.parse(row.v) : row.v;
+    },
+    async put(key, value, { expirationTtl } = {}) {
+      await storage.put(key, { v: String(value), exp: expirationTtl ? nowSec() + expirationTtl : 0 });
+    },
+    async list({ prefix }) {
+      const rows = await storage.list({ prefix });
+      return { keys: [...rows].filter(([, row]) => !row?.exp || row.exp > nowSec()).map(([name]) => ({ name })), list_complete: true };
+    },
+    /** 删掉过期的（每小时补报时顺手做）。 */
+    async sweep() {
+      const rows = await storage.list();
+      const old = [...rows].filter(([, row]) => row?.exp && row.exp <= nowSec()).map(([name]) => name);
+      for (let i = 0; i < old.length; i += 128) await storage.delete(old.slice(i, i + 128));
+      return old.length;
+    },
+  };
+}
+
+/** 唯一的一个 Durable Object：所有改状态的操作排成一队，一条做完再做下一条。 */
+export class AlertDesk {
+  constructor(ctx, env, { fetcher = fetch } = {}) {
+    this.store = deskStore(ctx.storage);
+    this.env = { ...env, ALERTS: this.store };
+    this.fetcher = fetcher;
+    this.queue = Promise.resolve();
+  }
+
+  serial(fn) {
+    const run = this.queue.then(fn, fn);
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    const opts = { fetcher: this.fetcher };
+    if (request.method === 'POST' && url.pathname === '/report') return this.serial(() => handleReport(request, this.env, opts));
+    if (request.method === 'POST' && url.pathname === '/server') return this.serial(() => handleServer(request, this.env, opts));
+    if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true, selfcheck: (await readState(this.env, 'selfcheck:last')) || null });
+    if (request.method === 'POST' && url.pathname === '/cron') {
+      const now = Number(url.searchParams.get('now')) || Math.floor(Date.now() / 1000);
+      await this.serial(async () => {
+        await this.store.sweep();
+        await flush(this.env, { now, fetcher: this.fetcher });
+      });
+      if (url.searchParams.get('selfcheck') === '1') await runSelfChecks(this.env, now, this.fetcher, (fn) => this.serial(fn));
+      return json({ ok: true });
+    }
+    return json({ ok: false }, 404);
+  }
+}
+
+const desk = (env) => env.DESK.get(env.DESK.idFromName('main'));
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -425,20 +509,17 @@ export default {
       const allowed = Object.values(sites(env)).some((s) => (s.origins || []).includes(origin));
       return new Response(null, { status: allowed ? 204 : 403, headers: allowed ? cors(origin) : {} });
     }
-    if (request.method === 'POST' && url.pathname === '/report') return handleReport(request, env);
-    if (request.method === 'POST' && url.pathname === '/server') return handleServer(request, env);
-    if (request.method === 'GET' && url.pathname === '/health') {
-      return json({ ok: true, selfcheck: (await readState(env, 'selfcheck:last')) || null });
-    }
-    return json({ ok: false }, 404);
+    const open = (request.method === 'POST' && (url.pathname === '/report' || url.pathname === '/server')) || (request.method === 'GET' && url.pathname === '/health');
+    if (!open) return json({ ok: false }, 404);
+    const headers = new Headers(request.headers);
+    headers.set('X-Desk-Country', String(request.cf?.country || ''));
+    return desk(env).fetch(new Request(request, { headers }));
   },
   // 每小时一次（wrangler.toml 的 crons）：补报攒下的次数；UTC 01 点（新加坡 09 点）那次再做自检。
   async scheduled(controller, env, ctx) {
     const now = Math.floor((controller.scheduledTime || Date.now()) / 1000);
-    ctx.waitUntil((async () => {
-      await flush(env, { now });
-      if (new Date(now * 1000).getUTCHours() === 1) await runSelfChecks(env, now);
-    })());
+    const selfcheck = new Date(now * 1000).getUTCHours() === 1 ? '1' : '0';
+    ctx.waitUntil(desk(env).fetch(`https://desk/cron?now=${now}&selfcheck=${selfcheck}`, { method: 'POST' }));
   },
 };
 

@@ -142,7 +142,7 @@ function achord_inquiry_health(): array
     $latest_at = $latest && isset($latest[0]->post_date_gmt) ? (int) strtotime($latest[0]->post_date_gmt . ' UTC') : 0;
     return [
         'plugin' => ACHORD_INQUIRY_VERSION,
-        'recipient_ok' => is_email(achord_inquiry_recipient()),
+        'recipient_ok' => (bool) is_email(achord_inquiry_recipient()), // is_email 成功时返回邮箱本身，只报真假，不把收件邮箱带进 Issue
         'turnstile_on' => $turnstile,
         'turnstile_ready' => !$turnstile || achord_inquiry_turnstile_enabled(),
         'dingtalk' => function_exists('achord_dingtalk_dispatch'),
@@ -161,7 +161,10 @@ function achord_inquiry_monitor_answer(array $fields): void
     if (is_wp_error($post_id)) {
         wp_send_json_error(['message' => achord_inquiry_alert_redact($post_id->get_error_message()), 'monitor' => true, 'health' => achord_inquiry_health()], 500);
     }
-    wp_delete_post((int) $post_id, true);
+    if (!wp_delete_post((int) $post_id, true)) {
+        // 删不掉就不能说自检正常：这条测试询盘会留在后台、混进询盘统计。
+        wp_send_json_error(['message' => sprintf('测试询盘已保存，但删不掉（编号 %d），请到后台询盘列表手动删除', (int) $post_id), 'monitor' => true, 'saved' => true, 'health' => achord_inquiry_health()], 500);
+    }
     wp_send_json_success(['monitor' => true, 'saved' => true, 'health' => achord_inquiry_health()]);
 }
 

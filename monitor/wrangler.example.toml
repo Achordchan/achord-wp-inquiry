@@ -1,4 +1,4 @@
-# 表单报警服务的部署配置样板。复制成 wrangler.toml，填上 KV 的 id 和自定义域名后 `npx wrangler deploy`。
+# 表单报警服务的部署配置样板。复制成 wrangler.toml 后 `npx wrangler deploy`（免费版即可，Durable Object 用 SQLite 存储）。
 # 密钥不写在这里，用 `npx wrangler secret put <名字>` 设：
 #   GITHUB_TOKEN      细粒度令牌，只授权两个站点仓库的 Actions: Read and write
 #   SITE_SECRETS      {"bobliftcrane.com":"<起重机站报警密钥>","bobliftloader.com":"<装载站报警密钥>"}（和各站「询盘设置」里填的一样）
@@ -11,7 +11,14 @@ workers_dev = false
 
 routes = [{ pattern = "form-alert.achord.cn", custom_domain = true }]
 
-kv_namespaces = [{ binding = "ALERTS", id = "<KV namespace id>" }]
+# 计数和状态放在一个 Durable Object 里，所有报警排队逐条处理，故障爆发时不会重复开 Issue、不丢计数。
+[[durable_objects.bindings]]
+name = "DESK"
+class_name = "AlertDesk"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AlertDesk"]
 
 # 每小时一次：补报攒下的次数；UTC 01 点（新加坡 09 点）那次做每日自检。
 [triggers]

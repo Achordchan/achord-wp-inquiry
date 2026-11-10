@@ -60,7 +60,8 @@ function sanitize_textarea_field($s) { return trim(strip_tags((string) $s)); }
 function sanitize_email($s) { return filter_var(trim((string) $s), FILTER_VALIDATE_EMAIL) ?: ''; }
 function sanitize_key($s) { return preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $s)); }
 function sanitize_html_class($s) { return preg_replace('/[^A-Za-z0-9_-]/', '', (string) $s); }
-function is_email($s) { return (bool) filter_var((string) $s, FILTER_VALIDATE_EMAIL); }
+// 和 WordPress 一样：合格时返回邮箱本身，不合格返回 false。
+function is_email($s) { return filter_var((string) $s, FILTER_VALIDATE_EMAIL) ? (string) $s : false; }
 function esc_html($s) { return htmlspecialchars((string) $s, ENT_QUOTES); }
 function esc_attr($s) { return htmlspecialchars((string) $s, ENT_QUOTES); }
 function esc_url($s) { return htmlspecialchars((string) $s, ENT_QUOTES); }
@@ -88,7 +89,7 @@ function wp_remote_post($u, $a = []) {
     $GLOBALS['posts_sent'][] = ['url' => $u, 'args' => $a];
     return ['code' => 200, 'body' => '{"success":true}'];
 }
-function wp_delete_post($id, $force = false) { $GLOBALS['deleted'][] = [$id, $force]; return true; }
+function wp_delete_post($id, $force = false) { $GLOBALS['deleted'][] = [$id, $force]; return empty($GLOBALS['delete_fails']) ? (object) ['ID' => $id] : false; }
 function plugins_url($p, $f) { return 'https://example.com/wp-content/plugins/achord-wp-inquiry/' . $p; }
 function wp_enqueue_script(...$a) { $GLOBALS['enqueued'][] = $a; }
 function wp_add_inline_script($h, $js, $pos = 'after') { $GLOBALS['inline'][$h] = $js; }
@@ -627,6 +628,11 @@ $deleted = end($GLOBALS['deleted']);
 check($r->success && ($r->data['monitor'] ?? false) === true && $deleted && $deleted[1] === true, '自检：存下后彻底删除');
 check(!$GLOBALS['mails'] && !$GLOBALS['dingtalk'] && !$GLOBALS['scheduled'], '自检：不发邮件、不推钉钉、不排后台判断');
 check(($r->data['health']['recipient_ok'] ?? null) === true && array_key_exists('mail_fail_at', $r->data['health']), '自检答复带收件人和发信状态');
+check(!str_contains(json_encode($r->data['health']), '@'), '自检答复不带收件邮箱');
+$GLOBALS['delete_fails'] = true;
+$r = submit(['name' => 'Self-check', 'email' => 'monitor@example.com', 'message' => 'self-check']);
+check(!$r->success && $r->status === 500 && str_contains((string) ($r->data['message'] ?? ''), '删不掉'), '自检询盘删不掉：答复失败，不说自检正常');
+$GLOBALS['delete_fails'] = false;
 unset($_SERVER['HTTP_X_ACHORD_MONITOR']);
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_enabled'] = '0';
 
