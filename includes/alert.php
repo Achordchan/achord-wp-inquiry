@@ -130,6 +130,12 @@ function achord_inquiry_is_monitor(): bool
     return $secret !== '' && $given !== '' && hash_equals($secret, $given);
 }
 
+/** 请求带了自检请求头（不管对不对）。认不出的自检请求要拒收，不能当真询盘收下。 */
+function achord_inquiry_monitor_header_given(): bool
+{
+    return trim((string) ($_SERVER['HTTP_X_ACHORD_MONITOR'] ?? '')) !== '';
+}
+
 /** 本站通知配置是否完好，自检答复里带给报警服务判断。 */
 function achord_inquiry_health(): array
 {

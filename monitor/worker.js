@@ -56,6 +56,8 @@ const LIMITS = { perIpHour: 10, newIssuesPerSiteDay: 5, dingEvery: 6 * HOUR, kee
 const BODY_LIMIT = { '/report': 16 * 1024, '/server': 4 * 1024 };
 // 往 GitHub、钉钉发请求最多等这么久（毫秒），连读答复在内；超时算没发成，补报时再试，不卡住后面的报警。
 const OUTBOUND_MS = 10000;
+// GitHub 或钉钉这次没发成：10 分钟内不再试（每小时补报照常），免得故障期间每来一条报告都在队里白等一次超时。
+const RETRY_GAP = 10 * 60;
 
 /** 边读边数，超过上限立即停，不把大请求整个读进内存。超过返回 null。 */
 export async function readLimited(request, limit) {
@@ -313,9 +315,10 @@ export async function intake(env, event, { now = Math.floor(Date.now() / 1000), 
  * 一边出错（比如 GitHub 令牌过期）不耽误另一边，没发成的那边每小时补报时接着试。
  */
 function dueChannels(state, now) {
+  const rested = (failedAt) => !failedAt || now - failedAt >= RETRY_GAP;
   return {
-    git: state.pending > 0 && (!state.lastSent || now - state.lastSent >= HOUR),
-    ding: (state.dingCount || 0) > 0 && (!state.lastDing || now - state.lastDing >= LIMITS.dingEvery),
+    git: state.pending > 0 && (!state.lastSent || now - state.lastSent >= HOUR) && rested(state.gitFailedAt),
+    ding: (state.dingCount || 0) > 0 && (!state.lastDing || now - state.lastDing >= LIMITS.dingEvery) && rested(state.dingFailedAt),
   };
 }
 
@@ -351,17 +354,25 @@ async function send(env, siteCfg, key, fp, state, now, fetcher, due) {
       state.lastSent = now;
       state.pending = 0;
       state.visitors = [];
-      await writeState(env, key, state);
+      state.gitFailedAt = 0;
+    } else {
+      state.gitFailedAt = now;
     }
+    await writeState(env, key, state);
   }
   if (due.ding) {
     const title = compose(siteCfg, event, { now, count: 1, visitors: 1 }).title;
+    let pushed = false;
     try {
-      if (await sendDingtalk(env, siteCfg, title, event, { now, count: state.dingCount || 1, gitFailed: due.git && !ok }, fetcher)) {
-        state.lastDing = now;
-        state.dingCount = 0;
-      }
-    } catch { /* 钉钉不通：每小时补报时再试 */ }
+      pushed = await sendDingtalk(env, siteCfg, title, event, { now, count: state.dingCount || 1, gitFailed: due.git && !ok }, fetcher);
+    } catch { /* 钉钉不通：过一阵再试 */ }
+    if (pushed) {
+      state.lastDing = now;
+      state.dingCount = 0;
+      state.dingFailedAt = 0;
+    } else {
+      state.dingFailedAt = now;
+    }
     await writeState(env, key, state);
   }
   return ok;
@@ -408,28 +419,35 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
       return { whole: false, text: `答复没收完整：${error?.message || error}` };
     }
   };
-  const attempt = async () => {
-    const page = await fetcher(check.page, { headers: { 'User-Agent': ua, Accept: 'text/html' }, redirect: 'follow' }).catch((e) => ({ status: 0, text: async () => String(e) }));
+  // signal：整次自检的时限到了就中断请求；超时后迟到的答复也不再往下走，免得多提交一条测试询盘。
+  const attempt = async (signal) => {
+    const stopIfLate = () => { if (signal?.aborted) throw new Error('自检超时'); };
+    const page = await fetcher(check.page, { headers: { 'User-Agent': ua, Accept: 'text/html' }, redirect: 'follow', signal }).catch((e) => ({ status: 0, text: async () => String(e) }));
     const pageBody = await readText(page);
     const html = pageBody.text;
     if (!pageBody.whole) return [{ kind: 'check_page', status: page.status, detail: html, page: new URL(check.page).pathname }];
     if (page.status !== 200 || !html.includes(check.marker)) {
       return [{ kind: 'check_page', status: page.status, detail: page.status === 200 ? `页面上找不到表单（${check.marker}）` : html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '', page: new URL(check.page).pathname }];
     }
-    const nonceResponse = await fetcher(`${check.nonce_url}${check.nonce_url.includes('?') ? '&' : '?'}t=${now}`, { headers: { 'User-Agent': ua, Accept: 'application/json' } }).catch(() => ({ status: 0, json: async () => ({}) }));
+    const nonceResponse = await fetcher(`${check.nonce_url}${check.nonce_url.includes('?') ? '&' : '?'}t=${now}`, { headers: { 'User-Agent': ua, Accept: 'application/json' }, signal }).catch(() => ({ status: 0, json: async () => ({}) }));
     const nonce = String((await nonceResponse.json().catch(() => ({})))?.data?.nonce || '');
     if (!nonce) return [{ kind: 'check_nonce', status: nonceResponse.status, detail: check.nonce_url }];
+    stopIfLate();
     const form = new URLSearchParams({ action: check.action, [check.nonce_field]: nonce, [check.response_field]: 'json', source_title: '每日自检', ...(check.fields || {}) });
     const submit = await fetcher(check.submit, {
       method: 'POST',
       headers: { 'User-Agent': ua, Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded', 'X-Achord-Monitor': secret },
       body: form.toString(),
+      signal,
     }).catch((e) => ({ status: 0, text: async () => String(e) }));
     const submitBody = await readText(submit);
     if (!submitBody.whole) return [{ kind: 'check_submit', status: submit.status, detail: submitBody.text }];
     const raw = submitBody.text;
     let answer = null;
     try { answer = JSON.parse(raw); } catch { /* 下面报 */ }
+    if (answer?.data?.code === 'monitorRejected') {
+      return [{ kind: 'check_secret', status: submit.status, detail: '站点没认出报警密钥，拒收了测试询盘（没有存、没有发邮件），请核对两边的报警密钥' }];
+    }
     if (!answer || answer.success !== true) {
       return [{ kind: 'check_submit', status: submit.status, detail: answer?.data?.message || raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || raw.slice(0, 200) }];
     }
@@ -451,7 +469,7 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
   };
   // 意外出错也当成提交失败报出来，不让一个站的错误打断别的站。
   // 整个自检一次最多等 60 秒（页面、随机数、提交三步），站点卡住也不拖住后面的站。
-  const safeAttempt = () => withDeadline(Number(env.SELFCHECK_MS) || 60000, () => attempt()).catch((error) => [{ kind: 'check_submit', status: 0, detail: `自检出错：${error?.message || error}` }]);
+  const safeAttempt = () => withDeadline(Number(env.SELFCHECK_MS) || 60000, (signal) => attempt(signal)).catch((error) => [{ kind: 'check_submit', status: 0, detail: `自检出错：${error?.message || error}` }]);
   let found = await safeAttempt();
   // 一次失败可能是网络抖动：等一会儿再试一次，还不行才报。
   if (found.some((p) => ['check_page', 'check_nonce', 'check_submit'].includes(p.kind))) {

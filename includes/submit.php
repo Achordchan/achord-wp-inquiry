@@ -168,6 +168,11 @@ function achord_inquiry_handle(): void
     if (achord_inquiry_is_monitor()) {
         achord_inquiry_monitor_answer($fields);
     }
+    // A self-check whose secret this site does not recognise (unset here, or the two sides differ) is turned away, not
+    // taken as a real inquiry: otherwise it would be saved, mailed and counted every day until someone noticed.
+    if (achord_inquiry_monitor_header_given()) {
+        wp_send_json_error(['message' => '本站没认出报警密钥：请核对询盘设置和报警服务里的报警密钥', 'code' => 'monitorRejected', 'monitor' => false], 403);
+    }
     if (!achord_inquiry_verify_turnstile()) {
         achord_inquiry_fail('verificationRequired', 'verification');
     }

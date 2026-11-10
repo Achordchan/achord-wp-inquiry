@@ -130,6 +130,7 @@ const response = (status, body) => ({ status, clone: () => ({ text: () => Promis
   r.winListeners.pagehide();
   try { await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' }); } catch { /* 主题照样拿到错误 */ }
   check(r.beacons.length === 0, '离开页面时的中断：不报');
+  check(!r.winListeners.beforeunload, '不靠 beforeunload 判断离开（访客点「取消离开」时它也会触发）');
 
   // 同一页同一种错误只报一次，一页最多报 3 次。
   r = run({ reply: response(500, '{}') });

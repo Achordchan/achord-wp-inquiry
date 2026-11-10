@@ -82,7 +82,8 @@ env = makeEnv();
 net = fakeNet({ 'api.github.com': () => new Response('bad', { status: 401 }) });
 check(await intake(env, event, { now: T0, fetcher: net.fetcher }) === 'held', 'GitHub 调不通：记下待补报');
 net = fakeNet();
-await flush(env, { now: T0 + 60, fetcher: net.fetcher });
+check(await intake(env, { ...event, visitor: 'v9' }, { now: T0 + 60, fetcher: net.fetcher }) === 'held' && ghCalls(net.calls).length === 0, '刚失败过：10 分钟内来的新报告不再白等一次，只计数');
+await flush(env, { now: T0 + 700, fetcher: net.fetcher });
 check(ghCalls(net.calls).length === 1, '下一次补报时重新触发');
 
 // 浏览器上报：来源域名、类型、限流。
@@ -151,14 +152,14 @@ env = makeEnv();
 net = fakeNet({ 'api.github.com': () => { throw new TypeError('network down'); } });
 check(await intake(env, event, { now: T0, fetcher: net.fetcher }) === 'held', 'GitHub 断网：不丢，记下待补报');
 net = fakeNet({ dingtalk: () => { throw new TypeError('ding down'); } });
-await flush(env, { now: T0 + 60, fetcher: net.fetcher });
+await flush(env, { now: T0 + 700, fetcher: net.fetcher });
 const afterDing = [...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'));
-check(ghCalls(net.calls).length === 1 && JSON.parse(afterDing[1]).lastSent === T0 + 60, '钉钉断网：Issue 照样记成已发，不会重复开');
+check(ghCalls(net.calls).length === 1 && JSON.parse(afterDing[1]).lastSent === T0 + 700, '钉钉断网：Issue 照样记成已发，不会重复开');
 
 env = makeEnv();
 await intake(env, event, { now: T0, fetcher: fakeNet({ dingtalk: () => { throw new TypeError('ding down'); } }).fetcher });
 net = fakeNet();
-await flush(env, { now: T0 + 120, fetcher: net.fetcher });
+await flush(env, { now: T0 + 700, fetcher: net.fetcher });
 check(dingCalls(net.calls).length === 1 && ghCalls(net.calls).length === 0, '钉钉没推成的：下次补报只补推钉钉，不重复开 Issue');
 
 // GitHub 令牌失效：钉钉照样推，并说明 Issue 没开成。
@@ -229,6 +230,17 @@ net = fakeNet({ 'api.github.com': () => new Promise(() => {}), dingtalk: () => n
 const t1 = Date.now();
 check(await intake(env, event, { now: T0, fetcher: net.fetcher }) === 'held' && Date.now() - t1 < 1000, 'GitHub、钉钉卡住：到时限就放弃，记下待补报');
 check(net.calls.every((c) => c.init.signal), '外发请求都带中断信号');
+
+// 站点没认出密钥、拒收了：报 check_secret。
+net = siteNet({ 'boblift_inquiry_submit=1': () => new Response(JSON.stringify({ success: false, data: { code: 'monitorRejected', monitor: false } }), { status: 403 }) });
+problems = await selfCheck(makeEnv(), 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
+check(problems[0]?.kind === 'check_secret' && problems[0].detail.includes('拒收'), '站点拒收自检：报 check_secret');
+
+// 自检超时：迟到的答复不再往下提交测试询盘。
+net = siteNet({ boblift_fresh_nonce: () => new Promise((r) => setTimeout(() => r(new Response(JSON.stringify({ success: true, data: { nonce: 'late' } }))), 60)) });
+problems = await selfCheck({ ...makeEnv(), SELFCHECK_MS: 20 }, 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
+await new Promise((r) => setTimeout(r, 150));
+check(problems[0]?.detail.includes('秒没回应') && !net.calls.some((c) => c.init.method === 'POST') && net.calls.every((c) => c.init.signal), '自检超时：报出来，迟到的随机数不再拿去提交');
 
 // 报警服务没配好该站密钥：不提交测试询盘，直接报。
 net = siteNet();

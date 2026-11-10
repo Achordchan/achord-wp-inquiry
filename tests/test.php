@@ -613,6 +613,10 @@ $secret = str_repeat('k', 32);
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_secret'] = $secret;
 $_SERVER['HTTP_X_ACHORD_MONITOR'] = 'wrong-' . $secret;
 check(!achord_inquiry_is_monitor(), '密钥不对不算自检');
+$GLOBALS['mails'] = [];
+$savedBefore = count($GLOBALS['inserted'] ?? []);
+$r = submit(['name' => 'Self-check', 'email' => 'monitor@example.com', 'message' => 'self-check']);
+check(!$r->success && $r->status === 403 && ($r->data['code'] ?? '') === 'monitorRejected' && !$GLOBALS['mails'] && count($GLOBALS['inserted'] ?? []) === $savedBefore, '带了自检请求头但密钥不对：拒收，不当真询盘存、不发邮件');
 
 // 自检：照常校验随机数、保存后立刻删除，不发邮件钉钉、不排后台任务，答复带配置状态。
 $_SERVER['HTTP_X_ACHORD_MONITOR'] = $secret;

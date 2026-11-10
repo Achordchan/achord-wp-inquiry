@@ -46,10 +46,10 @@
 
   // 断网时没发出去的报告，网络恢复后补发；最多留 3 条，离开页面就没了。
   const waiting = [];
-  // 访客正在离开页面（跳转、关闭）：这时浏览器中断请求是正常的，不报。
+  // 访客真的离开页面（跳转、关闭）：这时浏览器中断请求是正常的，不报。只认 pagehide（真走了才触发）；
+  // 不用 beforeunload，主题弹「确定离开吗」、访客点了取消时它也会触发，会把之后真的故障都漏掉。
   let leaving = false;
   window.addEventListener('pagehide', () => { leaving = true; });
-  window.addEventListener('beforeunload', () => { leaving = true; });
   window.addEventListener('pageshow', () => { leaving = false; });
 
   const report = (kind, detail = '', extra = {}) => {
