@@ -61,6 +61,12 @@ const response = (status, body) => ({ status, clone: () => ({ text: () => Promis
   check(b.steps.some((s) => s.includes('点击 button[inquiryOpen]')) && b.steps.some((s) => s.includes('填写 email')) && b.steps.some((s) => s.includes('服务器答复 502')), '足迹有点击、填写的字段名、服务器答复');
   check(!JSON.stringify(b).includes('ana@client.test'), '不带访客填的内容');
 
+  // CDN 自己的 HTML 限流页（429）：按限流报，凑够几位访客才开 Issue。
+  r = run({ reply: response(429, '<html><title>Too Many Requests</title></html>') });
+  await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' });
+  await flush();
+  check(r.beacons[0]?.body.kind === 'rate_limited' && r.beacons[0]?.body.detail === 'Too Many Requests', 'HTML 的 429 限流页：按 rate_limited 报，不当成答复格式不对');
+
   // 表单地址带广告点击编号：足迹只记路径，不带查询参数。
   r = run({ reply: response(502, 'Bad Gateway') });
   const form = new r.HTMLFormElement({ tagName: 'FORM', attrs: { action: 'https://site.test/contact/?gclid=abc123&token=zz&boblift_inquiry_submit=1#top' } });

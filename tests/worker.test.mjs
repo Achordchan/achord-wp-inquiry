@@ -225,6 +225,17 @@ await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
 const resent = JSON.parse(JSON.parse(ghCalls(net.calls)[0]?.init.body || '{"inputs":{"payload":"{}"}}').inputs.payload);
 check(ghCalls(net.calls).length === 1 && resent.title?.includes('服务器出错'), '流程跑失败：补报时把这次退回来重发');
 check(net.calls.some((c) => c.url.includes('/actions/workflows/form-alert.yml/runs?') && c.url.includes('event=workflow_dispatch')), '核对时查的是这个流程的手动触发运行');
+{
+  // 跑失败退回重发时，这一批涉及的访客也退回来：重发的评论里人数对得上。
+  const e3 = makeEnv();
+  let n3 = fakeNet();
+  for (const [i, v] of ['a', 'a', 'b', 'c'].entries()) await intake(e3, { ...verify, visitor: v }, { now: T0 + i, fetcher: n3.fetcher });
+  const fp3 = JSON.parse(JSON.parse(ghCalls(n3.calls)[0].init.body).inputs.payload).fp;
+  n3 = fakeNet({ '/runs?': runsReply([{ display_title: `表单报警 ${fp3}`, status: 'completed', conclusion: 'failure', created_at: runAt }]) });
+  await flush(e3, { now: T0 + 3700, fetcher: n3.fetcher });
+  const again = JSON.parse(JSON.parse(ghCalls(n3.calls)[0]?.init.body || '{"inputs":{"payload":"{}"}}').inputs.payload);
+  check(String(again.comment || '').includes('过去 1 小时 4 次，涉及 3 位访客'), '流程跑失败重发：次数和涉及的访客都退回来（4 次 3 位）');
+}
 
 env = makeEnv();
 net = fakeNet();

@@ -376,7 +376,7 @@ async function send(env, siteCfg, key, fp, state, now, fetcher, due) {
     }
     if (ok) {
       // GitHub 收下了触发请求，不等于 Issue 开成了：记下这次，每小时补报时查流程跑成没有，没跑成就把次数退回来重发。
-      state.awaiting = { at: now, count: info.count, prevLastSent: state.lastSent };
+      state.awaiting = { at: now, count: info.count, visitors: state.visitors.slice(0, 50), prevLastSent: state.lastSent };
       state.lastSent = now;
       state.pending = 0;
       state.visitors = [];
@@ -480,6 +480,8 @@ function settleRun(state, fp, runs, now) {
   }
   if (!run && now - awaiting.at < CONFIRM_GIVE_UP) return false;
   state.pending += awaiting.count;
+  // 这一批涉及的访客也一并退回，重发时「涉及几位访客」才对。
+  for (const v of awaiting.visitors || []) if (!state.visitors.includes(v) && state.visitors.length < 50) state.visitors.push(v);
   state.lastSent = awaiting.prevLastSent || 0;
   state.gitFailedAt = 0;
   state.runFailedAt = now;

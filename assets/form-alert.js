@@ -118,6 +118,8 @@
       return ['bad_response', `答复格式不对：${String(text).slice(0, 120)}`];
     }
     const title = (String(text).match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').trim();
+    // CDN、服务器自己的限流页（HTML 的 429）也算限流，走「多位访客」门槛，不当成答复格式不对。
+    if (status === 429) return ['rate_limited', title || String(text).slice(0, 200)];
     if (status >= 500) return ['server_error', title || String(text).slice(0, 200)];
     if (status === 403) return ['forbidden', title || String(text).slice(0, 200)];
     return ['bad_response', title || String(text).slice(0, 200)];
