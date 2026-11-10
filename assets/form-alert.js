@@ -189,7 +189,8 @@
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) return;
     const action = String(form.getAttribute('action') || '');
-    step(`提交表单 ${action ? redact(action.replace(/^https?:\/\/[^/]+/, ''), 60) : ''}`);
+    // 只记路径：表单地址里的查询参数（gclid 之类的广告点击编号、令牌）不带走。
+    step(`提交表单 ${action ? redact(action.replace(/^https?:\/\/[^/]+/, '').split(/[?#]/)[0], 60) : ''}`);
     if (!watched(action)) return;
     const at = Date.now();
     lastSubmitAt = at;

@@ -52,8 +52,9 @@ check(await intake(env, { ...event, visitor: 'v2' }, { now: T0 + 600, fetcher: n
 check(await intake(env, { ...event, visitor: 'v3', detail: 'Bad Gateway (ref 2002)' }, { now: T0 + 700, fetcher: net.fetcher }) === 'held', '错误信息只差数字也算同一个');
 check(net.calls.length === 0, '期间不调 GitHub、不推钉钉');
 
-// 每小时补报：一条评论带次数，钉钉 6 小时内不再推。
-net = fakeNet();
+// 每小时补报：先核对上一次触发跑成了，再补一条评论带次数，钉钉 6 小时内不再推。
+const okRun = (fp, at) => () => new Response(JSON.stringify({ workflow_runs: [{ display_title: `表单报警 ${fp}`, status: 'completed', conclusion: 'success', created_at: new Date(at * 1000).toISOString() }] }), { status: 200 });
+net = fakeNet({ '/runs?': okRun(payload.fp, T0 + 5) });
 await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
 const flushed = JSON.parse(JSON.parse(ghCalls(net.calls)[0]?.init.body || '{"inputs":{"payload":"{}"}}').inputs.payload);
 check(ghCalls(net.calls).length === 1 && flushed.comment.includes('过去 1 小时 2 次，涉及 2 位访客') && dingCalls(net.calls).length === 0, '满一小时补报一条评论（2 次 2 位访客），钉钉不重复推');
@@ -234,6 +235,29 @@ net = fakeNet({ '/runs?': () => new Response('rate limited', { status: 403 }) })
 await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
 const unsettled = JSON.parse([...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'))[1]);
 check(ghCalls(net.calls).length === 0 && unsettled.awaiting, '查不了运行记录：这次先不核对，也不乱重发');
+
+// 上一批还没核对完，不发下一批：免得两批的次数搅在一起，一批失败另一批成功时漏报或重报。
+env = makeEnv();
+net = fakeNet();
+await intake(env, event, { now: T0, fetcher: net.fetcher });
+fpNow = await fpOf();
+net = fakeNet({ '/runs?': () => new Response('down', { status: 502 }) });
+check(await intake(env, { ...event, visitor: 'v8' }, { now: T0 + 3700, fetcher: net.fetcher }) === 'held' && ghCalls(net.calls).length === 0, '上一批核对不了：新报告只计数，不再触发');
+await flush(env, { now: T0 + 3800, fetcher: net.fetcher });
+check(ghCalls(net.calls).length === 0, '补报时也核对不了：照样等');
+net = fakeNet({ '/runs?': runsReply([{ display_title: `表单报警 ${fpNow}`, status: 'completed', conclusion: 'failure', created_at: runAt }]) });
+await flush(env, { now: T0 + 7300, fetcher: net.fetcher });
+{
+  const again = ghCalls(net.calls).map((c) => JSON.parse(JSON.parse(c.init.body).inputs.payload));
+  const st = JSON.parse([...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'))[1]);
+  check(again.length === 1 && st.awaiting.count === 2, '上一批跑失败：退回的那批和新来的一起重发一次（2 次），不漏不重');
+}
+net = fakeNet({ '/runs?': () => new Response('down', { status: 502 }) });
+await flush(env, { now: T0 + 7300 + 6 * 3600, fetcher: net.fetcher });
+{
+  const st = JSON.parse([...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'))[1]);
+  check(!st.awaiting, '一直查不了运行记录：等满 6 小时当它成了，不让后面的报警一直卡住');
+}
 
 // AlertDesk：同一时刻涌进来的同一个问题排队处理，只开一个 Issue，次数一条不丢。
 class FakeStorage {

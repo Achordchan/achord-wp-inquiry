@@ -61,6 +61,15 @@ const response = (status, body) => ({ status, clone: () => ({ text: () => Promis
   check(b.steps.some((s) => s.includes('点击 button[inquiryOpen]')) && b.steps.some((s) => s.includes('填写 email')) && b.steps.some((s) => s.includes('服务器答复 502')), '足迹有点击、填写的字段名、服务器答复');
   check(!JSON.stringify(b).includes('ana@client.test'), '不带访客填的内容');
 
+  // 表单地址带广告点击编号：足迹只记路径，不带查询参数。
+  r = run({ reply: response(502, 'Bad Gateway') });
+  const form = new r.HTMLFormElement({ tagName: 'FORM', attrs: { action: 'https://site.test/contact/?gclid=abc123&token=zz&boblift_inquiry_submit=1#top' } });
+  r.listeners.submit({ target: form });
+  await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' });
+  await flush();
+  b = r.beacons[0]?.body || {};
+  check(b.steps?.some((s) => s.includes('提交表单 /contact/')) && !JSON.stringify(b).includes('gclid') && !JSON.stringify(b).includes('abc123'), '提交足迹只记表单路径，不带 gclid 等查询参数');
+
   // 访客漏填：不报。
   r = run({ reply: response(400, JSON.stringify({ success: false, data: { code: 'requiredFields', message: 'Please enter' } })) });
   await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' });

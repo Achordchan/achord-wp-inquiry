@@ -58,6 +58,8 @@ const TRUSTED_SOURCES = ['server', 'selfcheck'];
 // 触发开 Issue 的流程后多久去核对它跑成没有；超过 CONFIRM_GIVE_UP 还查不到这次运行就当没跑成，重新触发。
 const CONFIRM_AFTER = 5 * 60;
 const CONFIRM_GIVE_UP = 30 * 60;
+// 一直查不了运行记录（比如令牌少了 Actions 读权限）：上一次触发等这么久就当它成了，免得后面的报警一直卡住。
+const CONFIRM_BLIND = 6 * HOUR;
 const RUN_TITLE = (fp) => `表单报警 ${fp}`;
 // 请求体上限（字节）：浏览器上报带 25 步足迹，16 KB 足够；服务器上报只有几个字段。
 const BODY_LIMIT = { '/report': 16 * 1024, '/server': 4 * 1024 };
@@ -314,6 +316,10 @@ export async function intake(env, event, { now = Math.floor(Date.now() / 1000), 
   for (const v of crowdVisitors) if (!state.visitors.includes(v) && state.visitors.length < 50) state.visitors.push(v);
   state.sample = { ...event, steps: (event.steps || []).slice(-25) };
 
+  // 上一批还在等核对、而这批已满一小时该报了：先核对上一批，核对完才发这批。
+  if (state.awaiting && now - state.awaiting.at >= CONFIRM_AFTER && now - (state.lastSent || 0) >= HOUR) {
+    settleRun(state, fp, await recentRuns(env, siteCfg, now, fetcher), now);
+  }
   const due = dueChannels(state, now);
   if (!due.git && !due.ding) {
     await writeState(env, key, state);
@@ -333,7 +339,8 @@ export async function intake(env, event, { now = Math.floor(Date.now() / 1000), 
 function dueChannels(state, now) {
   const rested = (failedAt) => !failedAt || now - failedAt >= RETRY_GAP;
   return {
-    git: state.pending > 0 && (!state.lastSent || now - state.lastSent >= HOUR) && rested(state.gitFailedAt),
+    // 上一次触发还没核对完（awaiting）就不再触发：一次只有一批在路上，跑失败了退回来的正是那一批，不会漏也不会重。
+    git: state.pending > 0 && !state.awaiting && (!state.lastSent || now - state.lastSent >= HOUR) && rested(state.gitFailedAt),
     ding: (state.dingCount || 0) > 0 && (!state.lastDing || now - state.lastDing >= LIMITS.dingEvery) && rested(state.dingFailedAt),
   };
 }
@@ -369,11 +376,7 @@ async function send(env, siteCfg, key, fp, state, now, fetcher, due) {
     }
     if (ok) {
       // GitHub 收下了触发请求，不等于 Issue 开成了：记下这次，每小时补报时查流程跑成没有，没跑成就把次数退回来重发。
-      state.awaiting = {
-        at: now,
-        count: info.count + (state.awaiting?.count || 0),
-        prevLastSent: state.awaiting ? state.awaiting.prevLastSent : state.lastSent,
-      };
+      state.awaiting = { at: now, count: info.count, prevLastSent: state.lastSent };
       state.lastSent = now;
       state.pending = 0;
       state.visitors = [];
@@ -452,7 +455,12 @@ async function recentRuns(env, siteCfg, now, fetcher) {
  */
 function settleRun(state, fp, runs, now) {
   const awaiting = state.awaiting;
-  if (!awaiting || !runs) return false;
+  if (!awaiting) return false;
+  if (!runs) {
+    if (now - awaiting.at < CONFIRM_BLIND) return false;
+    delete state.awaiting; // 查了 6 小时都查不了：当它成了，放后面的报警走。
+    return true;
+  }
   const run = runs
     .filter((r) => r.display_title === RUN_TITLE(fp) && Date.parse(r.created_at) / 1000 >= awaiting.at - 120)
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
