@@ -375,6 +375,17 @@ net = siteNet({ 'boblift_inquiry_submit=1': () => new Response(JSON.stringify({ 
 problems = await selfCheck(makeEnv(), 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
 check(problems[0]?.kind === 'check_secret' && problems[0].detail.includes('拒收'), '站点拒收自检：报 check_secret');
 
+// 提交地址跳转到别处：不跟跳转（不把密钥带过去），报 check_submit。
+{
+  const seen = [];
+  net = siteNet({ 'boblift_inquiry_submit=1': (url, init) => {
+    seen.push(init);
+    return new Response(null, { status: 302, headers: { Location: 'https://elsewhere.example/landing?x=1' } });
+  } });
+  problems = await selfCheck(makeEnv(), 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
+  check(seen.length >= 1 && seen.every((init) => init.redirect === 'manual') && problems[0]?.kind === 'check_submit' && problems[0].detail.includes('elsewhere.example/landing') && !problems[0].detail.includes('x=1'), '带密钥的提交不跟跳转，跳走了就报 check_submit');
+}
+
 // 测试询盘存下了却删不掉：不重试（第二次成功会把它盖掉），直接报 check_cleanup。
 {
   let submits = 0;

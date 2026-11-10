@@ -542,8 +542,13 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
       method: 'POST',
       headers: { 'User-Agent': ua, Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded', 'X-Achord-Monitor': secret },
       body: form.toString(),
+      // 带着报警密钥：不跟跳转，免得提交地址被跳到别的网站时把密钥一起带过去。
+      redirect: 'manual',
       signal,
     }).catch((e) => ({ status: 0, text: async () => String(e) }));
+    if (submit.status >= 300 && submit.status < 400) {
+      return [{ kind: 'check_submit', status: submit.status, detail: `提交地址跳转到了 ${plainHost(submit.headers?.get?.('Location'))}（没有带密钥跟过去），请核对提交地址` }];
+    }
     const submitBody = await readText(submit);
     if (!submitBody.whole) return [{ kind: 'check_submit', status: submit.status, detail: submitBody.text }];
     const raw = submitBody.text;
@@ -611,6 +616,16 @@ async function runSelfChecks(env, ctxNow, fetcher = fetch, serial = (fn) => fn()
 function safePath(value) {
   const path = String(value || '').split(/[?#]/)[0];
   return path.startsWith('/') ? path.replace(/[^\w\-./~%]/g, '').slice(0, 200) : '';
+}
+
+/** 跳转目标只报主机和路径，不带查询参数。 */
+function plainHost(location) {
+  try {
+    const url = new URL(String(location || ''), 'https://unknown.invalid');
+    return `${url.host}${url.pathname}`.slice(0, 120);
+  } catch {
+    return '别处';
+  }
 }
 
 function cors(origin) {
