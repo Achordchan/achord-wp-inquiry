@@ -132,6 +132,24 @@ check(res.status === 429, '同一 IP 每小时超过 10 条就拒收');
 const serverReq = (auth, body) => new Request('https://form-alert.test/server', { method: 'POST', headers: { Authorization: auth }, body: JSON.stringify(body) });
 res = await handleServer(serverReq('Bearer wrong', { site: 'bobliftcrane.com', kind: 'mail_failed', message: 'x' }), env, { now: T0, fetcher: net.fetcher });
 check(res.status === 403, '服务器上报密钥不对：拒收');
+{
+  // 站名、类型填对象原型上的名字（constructor、toString 等）不能冒充配好的站或密钥。
+  const native = String(Object);
+  const n3 = fakeNet();
+  for (const site of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    const r = await handleServer(serverReq(`Bearer ${String(({})[site])}`, { site, kind: 'mail_failed', message: 'x' }), env, { now: T0, fetcher: n3.fetcher });
+    check(r.status === 403, `服务器上报站名填 ${site}：拒收`);
+  }
+  let r = await handleServer(serverReq(`Bearer ${native}`, { site: 'constructor', kind: 'mail_failed' }), env, { now: T0, fetcher: n3.fetcher });
+  check(r.status === 403, '拿 Object 构造函数的字符串当密钥：拒收');
+  r = await handleServer(serverReq(`Bearer ${SECRET}`, { site: 'bobliftcrane.com', kind: 'constructor' }), env, { now: T0, fetcher: n3.fetcher });
+  check(r.status === 400, '服务器上报类型填 constructor：不收');
+  r = await handleReport(req({ ...browserBody, site: 'constructor' }), env, { now: T0, fetcher: n3.fetcher });
+  check(r.status === 403, '浏览器上报站名填 constructor：拒收');
+  r = await handleReport(req({ ...browserBody, kind: 'toString' }, 'https://bobliftcrane.com', '198.51.100.9'), env, { now: T0, fetcher: n3.fetcher });
+  check(r.status === 400, '浏览器上报类型填 toString：不收');
+  check(n3.calls.length === 0, '这些冒充请求一条都没往外发');
+}
 net = fakeNet();
 res = await handleServer(serverReq(`Bearer ${SECRET}`, { site: 'bobliftcrane.com', kind: 'mail_failed', message: 'SMTP connect() failed', inquiry: 15001 }), env, { now: T0, fetcher: net.fetcher });
 const mailPayload = JSON.parse(JSON.parse(ghCalls(net.calls)[0].init.body).inputs.payload);

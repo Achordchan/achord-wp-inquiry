@@ -125,19 +125,31 @@ async function sha(text) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// 按访客给的键查配置表，只认表里自己写的项：不然 site 填 constructor、toString 之类，
+// 会查到对象原型上的内置函数，被当成「配好的站」或「密钥」。
+function own(map, key) {
+  return map && typeof map === 'object' && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
+// 站点表：只留值是对象的项，放进没有原型的对象里，后面怎么按站名查都碰不到内置属性。
 function sites(env) {
+  const out = Object.create(null);
   try {
     const parsed = typeof env.SITES === 'string' ? JSON.parse(env.SITES) : env.SITES;
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [name, cfg] of Object.entries(parsed)) {
+        if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) out[name] = cfg;
+      }
+    }
   } catch {
-    return {};
+    // 配置坏了就当一个站都没有。
   }
+  return out;
 }
 function siteSecret(env, site) {
   try {
     const all = typeof env.SITE_SECRETS === 'string' ? JSON.parse(env.SITE_SECRETS) : env.SITE_SECRETS;
-    const secret = String(all?.[site] || '');
-    return secret.length >= 24 ? secret : '';
+    const secret = own(all, site);
+    return typeof secret === 'string' && secret.length >= 24 ? secret : '';
   } catch {
     return '';
   }
@@ -180,7 +192,7 @@ export async function fingerprint(event) {
 }
 
 function kindText(kind) {
-  return KINDS[kind] || SERVER_KINDS[kind] || CHECK_KINDS[kind] || kind;
+  return own(KINDS, kind) || own(SERVER_KINDS, kind) || own(CHECK_KINDS, kind) || kind;
 }
 const sgt = (seconds) => new Date(seconds * 1000 + 8 * HOUR * 1000).toISOString().replace('T', ' ').slice(0, 16) + '（新加坡时间）';
 
@@ -643,7 +655,7 @@ export async function handleReport(request, env, { now = Math.floor(Date.now() /
   const siteCfg = sites(env)[site];
   if (!siteCfg || !(siteCfg.origins || []).includes(origin)) return json({ ok: false }, 403);
   const headers = cors(origin);
-  if (!KINDS[body.kind]) return json({ ok: false }, 400, headers);
+  if (!own(KINDS, body.kind)) return json({ ok: false }, 400, headers);
   const ip = request.headers.get('CF-Connecting-IP') || '';
   // IP 只用来限流和数「几位访客」，算成不可逆的短编号后就丢掉。
   const visitor = (await sha(`${ip}|${env.SITE_SECRETS || ''}`)).slice(0, 12);
@@ -678,7 +690,7 @@ export async function handleServer(request, env, { now = Math.floor(Date.now() /
   const secret = siteSecret(env, site);
   const given = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
   if (!sites(env)[site] || !sameSecret(secret, given)) return json({ ok: false }, 403);
-  if (!SERVER_KINDS[body.kind]) return json({ ok: false }, 400);
+  if (!own(SERVER_KINDS, body.kind)) return json({ ok: false }, 400);
   const event = { site, source: 'server', kind: body.kind, form: body.form === 'catalog' ? 'catalog' : 'inquiry', detail: redact(body.detail || body.message), inquiry: Number(body.inquiry) || 0, status: 0 };
   return json({ ok: true, result: await intake(env, event, { now, fetcher }) });
 }
