@@ -647,7 +647,7 @@ $latestQuery = array_values(array_filter($GLOBALS['get_posts_args'] ?? [], stati
 check($latestQuery && (end($latestQuery)['meta_query'][0] ?? []) === ['key' => '_invalid', 'compare' => 'NOT EXISTS'], '「最近一条询盘」不算标了无效的垃圾询盘');
 $GLOBALS['delete_fails'] = true;
 $r = submit(['name' => 'Self-check', 'email' => 'monitor@example.com', 'message' => 'self-check']);
-check(!$r->success && $r->status === 500 && str_contains((string) ($r->data['message'] ?? ''), '删不掉'), '自检询盘删不掉：答复失败，不说自检正常');
+check(!$r->success && $r->status === 500 && str_contains((string) ($r->data['message'] ?? ''), '删不掉') && ($r->data['code'] ?? '') === 'cleanupFailed', '自检询盘删不掉：答复失败、带 cleanupFailed，不说自检正常');
 $GLOBALS['delete_fails'] = false;
 
 // 清掉报警地址（密钥还留着）：报警关了，自检请求不认，拒收。

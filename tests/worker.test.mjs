@@ -365,6 +365,19 @@ net = siteNet({ 'boblift_inquiry_submit=1': () => new Response(JSON.stringify({ 
 problems = await selfCheck(makeEnv(), 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
 check(problems[0]?.kind === 'check_secret' && problems[0].detail.includes('拒收'), '站点拒收自检：报 check_secret');
 
+// 测试询盘存下了却删不掉：不重试（第二次成功会把它盖掉），直接报 check_cleanup。
+{
+  let submits = 0;
+  net = siteNet({ 'boblift_inquiry_submit=1': () => {
+    submits += 1;
+    return submits === 1
+      ? new Response(JSON.stringify({ success: false, data: { code: 'cleanupFailed', monitor: true, saved: true, message: '测试询盘已保存，但删不掉（编号 77），请到后台询盘列表手动删除' } }), { status: 500 })
+      : new Response(JSON.stringify({ success: true, data: { monitor: true, health: { recipient_ok: true, dingtalk: true, last_inquiry_at: T0 - 100 } } }));
+  } });
+  problems = await selfCheck(makeEnv(), 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
+  check(submits === 1 && problems.length === 1 && problems[0].kind === 'check_cleanup' && problems[0].detail.includes('77'), '测试询盘删不掉：不重试，报 check_cleanup 带编号');
+}
+
 // 自检超时：迟到的答复不再往下提交测试询盘。
 net = siteNet({ boblift_fresh_nonce: () => new Promise((r) => setTimeout(() => r(new Response(JSON.stringify({ success: true, data: { nonce: 'late' } }))), 60)) });
 problems = await selfCheck({ ...makeEnv(), SELFCHECK_MS: 20 }, 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });

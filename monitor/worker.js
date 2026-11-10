@@ -48,6 +48,7 @@ const CHECK_KINDS = {
   check_config: '自检：通知配置有问题',
   check_mail: '自检：最近一次通知邮件发送失败',
   check_quiet: '自检：很久没有收到询盘',
+  check_cleanup: '自检：测试询盘存下了但删不掉，留在了后台',
 };
 // 单个访客失败不算故障，一小时内这么多位不同访客都失败才报。
 const CROWD = { verification: 3, rate_limited: 3 };
@@ -546,6 +547,10 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
     const raw = submitBody.text;
     let answer = null;
     try { answer = JSON.parse(raw); } catch { /* 下面报 */ }
+    // 存下了却删不掉：后台多了一条测试询盘。不重试（重试成功会把这件事盖掉），直接报，提醒手动删。
+    if (answer?.data?.code === 'cleanupFailed' || (answer && answer.success !== true && answer.data?.saved === true)) {
+      return [{ kind: 'check_cleanup', status: submit.status, detail: answer.data?.message || '测试询盘已保存但没删掉，请到后台询盘列表手动删除' }];
+    }
     if (answer?.data?.code === 'monitorRejected') {
       return [{ kind: 'check_secret', status: submit.status, detail: '站点没认出报警密钥，拒收了测试询盘（没有存、没有发邮件），请核对两边的报警密钥' }];
     }

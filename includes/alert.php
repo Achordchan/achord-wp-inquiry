@@ -203,7 +203,7 @@ function achord_inquiry_monitor_answer(array $fields): void
     }
     if (!wp_delete_post((int) $post_id, true)) {
         // 删不掉就不能说自检正常：这条测试询盘会留在后台、混进询盘统计。
-        wp_send_json_error(['message' => sprintf('测试询盘已保存，但删不掉（编号 %d），请到后台询盘列表手动删除', (int) $post_id), 'monitor' => true, 'saved' => true, 'health' => achord_inquiry_health()], 500);
+        wp_send_json_error(['message' => sprintf('测试询盘已保存，但删不掉（编号 %d），请到后台询盘列表手动删除', (int) $post_id), 'code' => 'cleanupFailed', 'monitor' => true, 'saved' => true, 'health' => achord_inquiry_health()], 500);
     }
     wp_send_json_success(['monitor' => true, 'saved' => true, 'health' => achord_inquiry_health()]);
 }
