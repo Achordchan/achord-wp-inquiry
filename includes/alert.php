@@ -39,13 +39,19 @@ function achord_inquiry_alert_site(): string
     return preg_replace('/^www\./', '', $host) ?? $host;
 }
 
-/** 浏览器端报警脚本：只要填了报警服务地址就在每个页面加载（主题去掉的是 achord-inquiry，不是这个）。 */
+/** 报警服务地址和报警密钥都填好了才算启用；任何一项清空，浏览器端、页头记录器都不再加载。 */
+function achord_inquiry_alert_enabled(): bool
+{
+    return achord_inquiry_alert_endpoint() !== '' && achord_inquiry_alert_secret() !== '';
+}
+
+/** 浏览器端报警脚本：启用后在每个页面加载（主题去掉的是 achord-inquiry，不是这个）。 */
 function achord_inquiry_enqueue_alert_script(): void
 {
-    $endpoint = achord_inquiry_alert_endpoint();
-    if ($endpoint === '') {
+    if (!achord_inquiry_alert_enabled()) {
         return;
     }
+    $endpoint = achord_inquiry_alert_endpoint();
     $prefix = achord_inquiry_config()['prefix'];
     // 提交地址里出现这些片段的 POST 请求才盯：询盘表单和目录下载表单。主题有别的表单可以用过滤器加。
     $watch = (array) apply_filters('achord_inquiry_alert_watch', [$prefix . 'inquiry_submit=1', $prefix . 'catalog_request=1']);
@@ -63,7 +69,7 @@ function achord_inquiry_enqueue_alert_script(): void
  */
 function achord_inquiry_print_alert_early(): void
 {
-    if (achord_inquiry_alert_endpoint() === '') {
+    if (!achord_inquiry_alert_enabled()) {
         return;
     }
     $js = "window.achordFormAlertEarly=[];window.addEventListener('error',function(e){var t=e.target;"

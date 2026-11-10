@@ -464,6 +464,16 @@ function settleRun(state, fp, runs, now) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** 第一次自检正常的时间（「很久没有询盘」在站点一条有效询盘都还没有时，从这时算起）；没记过就记下现在。 */
+async function monitoringSince(env, site, now) {
+  if (!env.ALERTS) return 0;
+  const key = `since:${site}`;
+  const saved = Number(await env.ALERTS.get(key)) || 0;
+  if (saved) return saved;
+  await env.ALERTS.put(key, String(now));
+  return now;
+}
+
 /** 自检一个站：打开表单页、取新随机数、带报警密钥提交测试询盘、看站点报告的配置。返回发现的问题（没有就是空数组）。 */
 export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now() / 1000), fetcher = fetch, wait = 20000 } = {}) {
   const check = siteCfg.check || {};
@@ -525,8 +535,11 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
     if (health.dingtalk === false) found.push({ kind: 'check_config', detail: '钉钉插件没有启用', health });
     if (health.mail_fail_at && health.mail_fail_at > (health.mail_ok_at || 0)) found.push({ kind: 'check_mail', detail: health.mail_fail_reason || '最近一次通知邮件发送失败', health });
     const quietHours = Number(siteCfg.quiet_hours) || 0;
-    if (quietHours && health.last_inquiry_at && now - health.last_inquiry_at > quietHours * HOUR) {
-      found.push({ kind: 'check_quiet', detail: `已经 ${Math.floor((now - health.last_inquiry_at) / HOUR)} 小时没有收到询盘（提醒阈值 ${quietHours} 小时），表单自检正常，请看看流量或广告`, health });
+    // 还没有过一条有效询盘的站（新站）：从第一次自检正常那天算起。
+    const since = health.last_inquiry_at || (await monitoringSince(env, site, now));
+    if (quietHours && since && now - since > quietHours * HOUR) {
+      const what = health.last_inquiry_at ? '没有收到询盘' : '开始监控以来一条有效询盘都没收到';
+      found.push({ kind: 'check_quiet', detail: `已经 ${Math.floor((now - since) / HOUR)} 小时${what}（提醒阈值 ${quietHours} 小时），表单自检正常，请看看流量或广告`, health });
     }
     return found;
   };

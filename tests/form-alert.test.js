@@ -144,6 +144,10 @@ const response = (status, body) => ({ status, clone: () => ({ text: () => Promis
   // 不用脚本的表单失败后回到原页。
   r = run({ search: '?inquiry=error' });
   check(r.beacons[0]?.body.kind === 'page_error', '回到原页带 inquiry=error：上报');
+  r = run({ search: '?inquiry=error&inquiry_reason=tooMany' });
+  check(r.beacons[0]?.body.kind === 'rate_limited', '回到原页、原因是提交太频繁：按 rate_limited 报（凑够几位访客才开 Issue）');
+  r = run({ search: '?inquiry=error&inquiry_reason=saveFailed' });
+  check(r.beacons[0]?.body.kind === 'save_failed', '回到原页、原因是存不进去：按 save_failed 报');
   r = run({ search: '?inquiry=missing' });
   check(r.beacons.length === 0, '回到原页带 inquiry=missing（漏填）：不报');
 

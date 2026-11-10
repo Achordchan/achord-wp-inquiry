@@ -292,6 +292,14 @@ net = siteNet();
 problems = await selfCheck({ ...makeEnv(), SITE_SECRETS: '{}' }, 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
 check(problems[0]?.kind === 'check_secret' && net.calls.length === 0, '没配密钥：不提交，报 check_secret');
 
+// 还没有过有效询盘的新站：从第一次自检算起，超过阈值也报「很久没有询盘」。
+env = makeEnv();
+const neverNet = () => siteNet({ 'boblift_inquiry_submit=1': () => new Response(JSON.stringify({ success: true, data: { monitor: true, health: { recipient_ok: true, dingtalk: true, mail_ok_at: 0, mail_fail_at: 0, last_inquiry_at: 0 } } })) });
+problems = await selfCheck(env, 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: neverNet().fetcher, wait: 0 });
+check(problems.length === 0, '新站第一次自检：记下开始监控的时间，不报');
+problems = await selfCheck(env, 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0 + 73 * 3600, fetcher: neverNet().fetcher, wait: 0 });
+check(problems[0]?.kind === 'check_quiet' && problems[0].detail.includes('一条有效询盘都没收到'), '新站过了 72 小时还一条有效询盘都没有：报 check_quiet');
+
 // 其他。
 check(describeUa('Mozilla/5.0 (Linux; Android 14) AppleWebKit Chrome/131.0 Mobile Safari/537.36') === 'Chrome 131 / Android 14', '浏览器说法');
 check(!compose(SITES['bobliftcrane.com'], { ...event, detail: '@someone [x](http://a)' }, { now: T0, count: 1, visitors: 1 }).body.includes('[x](http'), '内容里的 Markdown 和 @ 被转义');

@@ -100,7 +100,7 @@ function wp_verify_nonce($n, $a) { return $n === 'good-' . $a; }
 function wp_send_json_success($d = null, $s = 200) { throw new JsonExit(true, $d, $s); }
 function wp_send_json_error($d = null, $s = 400) { throw new JsonExit(false, $d, $s); }
 function wp_die($m = '', $t = '', $a = []) { throw new JsonExit(false, ['message' => $m], 403); }
-function add_query_arg($k, $v, $u) { return $u . (str_contains($u, '?') ? '&' : '?') . $k . '=' . $v; }
+function add_query_arg(...$a) { [$args, $u] = is_array($a[0]) ? [$a[0], $a[1]] : [[$a[0] => $a[1]], $a[2]]; return $u . (str_contains($u, '?') ? '&' : '?') . http_build_query($args); }
 function post_type_exists($t) { return true; }
 function wp_insert_post($a, $e = false) { $a['post_title'] = stripslashes($a['post_title']); $GLOBALS['inserted'][] = $a; return count($GLOBALS['inserted']) + 100; }
 // 和 WordPress 一样，存之前先 unslash。
@@ -601,12 +601,18 @@ check(!$GLOBALS['enqueued'], '没填报警服务地址：不加载报警脚本')
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_url'] = 'https://alert.example.com/';
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_secret'] = 'short';
 achord_inquiry_enqueue_alert_script();
+ob_start();
+achord_inquiry_print_alert_early();
+check(!$GLOBALS['enqueued'] && (string) ob_get_clean() === '', '填了地址但密钥没填好：浏览器端和页头记录器都不加载');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_secret'] = str_repeat('s', 32);
+achord_inquiry_enqueue_alert_script();
 $inline = (string) ($GLOBALS['inline']['achord-form-alert'] ?? '');
 check($GLOBALS['enqueued'] && str_contains($inline, '"endpoint":"https:\/\/alert.example.com\/report"') && str_contains($inline, 'boblift_inquiry_submit=1') && str_contains($inline, '"site":"example.com"'), '填了地址：每页加载报警脚本，盯询盘和目录提交');
 ob_start();
 achord_inquiry_print_alert_early();
 $early = (string) ob_get_clean();
 check(str_contains($early, 'achordFormAlertEarly') && str_contains($early, 'challenges.cloudflare.com'), '页头最前面放验证码失败记录器');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_secret'] = 'short';
 check(achord_inquiry_alert_secret() === '', '密钥太短不算');
 check(achord_inquiry_alert_redact('Mail ana@client.test or call +1 (555) 010-2030 now') === 'Mail [已隐去] or call [已隐去] now', '报警内容隐去邮箱和电话');
 

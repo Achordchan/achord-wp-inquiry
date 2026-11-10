@@ -229,7 +229,11 @@
   step(`打开 ${location.pathname}`);
   // 不用脚本的表单失败后回到原页，地址带 ?inquiry=。
   const outcome = new URLSearchParams(location.search).get('inquiry');
-  if (outcome === 'error') report('page_error', '提交后回到原页：inquiry=error', { form: 'inquiry' });
+  const reason = new URLSearchParams(location.search).get('inquiry_reason') || '';
+  // 提交太频繁（429）也是回到原页带 inquiry=error：按「被限流」报，由报警服务凑够几位访客才开 Issue。
+  if (outcome === 'error' && reason === 'tooMany') report('rate_limited', '提交后回到原页：提交太频繁', { form: 'inquiry', status: 429 });
+  else if (outcome === 'error' && reason === 'saveFailed') report('save_failed', '提交后回到原页：询盘存不进后台', { form: 'inquiry', status: 500 });
+  else if (outcome === 'error') report('page_error', '提交后回到原页：inquiry=error', { form: 'inquiry' });
   else if (outcome === 'verification') report('verification', '提交后回到原页：inquiry=verification', { form: 'inquiry' });
 
   window.achordFormAlert = {

@@ -97,7 +97,8 @@ function achord_inquiry_fail(string $message_key, string $status = 'missing', in
         wp_send_json_error(['message' => $message, 'code' => $message_key], $code);
     }
     $back = wp_get_referer() ?: ((string) achord_inquiry_config()['fallback_url'] ?: home_url('/'));
-    wp_safe_redirect(add_query_arg('inquiry', $status, $back));
+    // inquiry_reason 让报警脚本分清「提交太频繁」（一个人反复提交，不算故障）和真出错；主题只看 inquiry，不受影响。
+    wp_safe_redirect(add_query_arg(['inquiry' => $status, 'inquiry_reason' => $message_key], $back));
     exit;
 }
 
