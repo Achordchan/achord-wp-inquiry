@@ -54,7 +54,7 @@ function admin_url($p = '') { return 'https://example.com/wp-admin/' . $p; }
 function untrailingslashit($s) { return rtrim($s, '/'); }
 function sanitize_text_field($s) { return trim(preg_replace('/\s+/', ' ', strip_tags((string) $s))); }
 function wp_json_encode($v, $f = 0) { return json_encode($v, $f); }
-function get_posts($a = []) { return $GLOBALS['posts'] ?? []; }
+function get_posts($a = []) { $GLOBALS['get_posts_args'][] = $a; return $GLOBALS['posts'] ?? []; }
 function get_the_title($p = 0) { return is_object($p) ? $p->post_title : ''; }
 function sanitize_textarea_field($s) { return trim(strip_tags((string) $s)); }
 function sanitize_email($s) { return filter_var(trim((string) $s), FILTER_VALIDATE_EMAIL) ?: ''; }
@@ -629,6 +629,8 @@ check($r->success && ($r->data['monitor'] ?? false) === true && $deleted && $del
 check(!$GLOBALS['mails'] && !$GLOBALS['dingtalk'] && !$GLOBALS['scheduled'], '自检：不发邮件、不推钉钉、不排后台判断');
 check(($r->data['health']['recipient_ok'] ?? null) === true && array_key_exists('mail_fail_at', $r->data['health']), '自检答复带收件人和发信状态');
 check(!str_contains(json_encode($r->data['health']), '@'), '自检答复不带收件邮箱');
+$latestQuery = array_values(array_filter($GLOBALS['get_posts_args'] ?? [], static fn($a) => ($a['numberposts'] ?? 0) === 1 && ($a['post_status'] ?? '') === 'publish'));
+check($latestQuery && (end($latestQuery)['meta_query'][0] ?? []) === ['key' => '_invalid', 'compare' => 'NOT EXISTS'], '「最近一条询盘」不算标了无效的垃圾询盘');
 $GLOBALS['delete_fails'] = true;
 $r = submit(['name' => 'Self-check', 'email' => 'monitor@example.com', 'message' => 'self-check']);
 check(!$r->success && $r->status === 500 && str_contains((string) ($r->data['message'] ?? ''), '删不掉'), '自检询盘删不掉：答复失败，不说自检正常');

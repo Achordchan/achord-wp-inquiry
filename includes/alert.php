@@ -137,8 +137,16 @@ function achord_inquiry_health(): array
     $mail = is_array($mail) ? $mail : [];
     $options = achord_inquiry_options();
     $turnstile = $options['turnstile_enabled'] === '1';
-    // 最近一条真实询盘（已发布，不含被拦截的草稿）的时间，报警服务据此发现「很久没有询盘」。
-    $latest = get_posts(['post_type' => achord_inquiry_post_type(), 'post_status' => 'publish', 'numberposts' => 1, 'orderby' => 'date', 'order' => 'DESC', 'suppress_filters' => true]);
+    // 最近一条真实询盘（已发布，不含被拦截的草稿，也不含标了无效的垃圾询盘）的时间，报警服务据此发现「很久没有询盘」。
+    $latest = get_posts([
+        'post_type' => achord_inquiry_post_type(),
+        'post_status' => 'publish',
+        'numberposts' => 1,
+        'orderby' => 'date',
+        'order' => 'DESC',
+        'suppress_filters' => true,
+        'meta_query' => [['key' => '_invalid', 'compare' => 'NOT EXISTS']],
+    ]);
     $latest_at = $latest && isset($latest[0]->post_date_gmt) ? (int) strtotime($latest[0]->post_date_gmt . ' UTC') : 0;
     return [
         'plugin' => ACHORD_INQUIRY_VERSION,

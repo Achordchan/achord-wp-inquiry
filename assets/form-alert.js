@@ -43,6 +43,9 @@
   const formName = (url) => (/catalog/i.test(url) ? 'catalog' : 'inquiry');
   const watched = (url) => WATCH.some((part) => url.includes(part));
 
+  // 断网时没发出去的报告，网络恢复后补发；最多留 3 条，离开页面就没了。
+  const waiting = [];
+
   const report = (kind, detail = '', extra = {}) => {
     kind = String(kind || '').replace(/[^a-z_]/g, '').slice(0, 30);
     if (!kind || sentKinds.has(kind) || sentReports >= 3) return false;
@@ -62,15 +65,28 @@
       steps: steps.slice(),
       at: new Date().toISOString(),
     });
-    // text/plain 不触发跨域预检；页面马上跳走也照样发出。
-    try {
-      if (navigator.sendBeacon && navigator.sendBeacon(ENDPOINT, new Blob([body], { type: 'text/plain' }))) return true;
-    } catch { /* 改用 fetch */ }
-    try {
-      window.fetch(ENDPOINT, { method: 'POST', body, keepalive: true, mode: 'no-cors', credentials: 'omit', headers: { 'Content-Type': 'text/plain' } }).catch(() => {});
-    } catch { /* 报不出去就算了 */ }
+    // 访客这会儿断网：先留在本页内存里，等网络回来再发（发出去之前不算数）。
+    if (navigator.onLine === false) {
+      waiting.push(body);
+      return true;
+    }
+    deliver(body);
     return true;
   };
+
+  const deliver = (body) => {
+    // text/plain 不触发跨域预检；页面马上跳走也照样发出。
+    try {
+      if (navigator.sendBeacon && navigator.sendBeacon(ENDPOINT, new Blob([body], { type: 'text/plain' }))) return;
+    } catch { /* 改用 fetch */ }
+    try {
+      window.fetch(ENDPOINT, { method: 'POST', body, keepalive: true, mode: 'no-cors', credentials: 'omit', headers: { 'Content-Type': 'text/plain' } })
+        .catch(() => { if (waiting.length < 3) waiting.push(body); });
+    } catch { /* 报不出去就算了 */ }
+  };
+  window.addEventListener('online', () => {
+    waiting.splice(0).forEach(deliver);
+  });
 
   /**
    * 看一次提交的结果，返回 [kind, detail] 或 null（成功，或访客自己漏填）。
@@ -92,7 +108,8 @@
       // 没有 code 的 400（主题自己的表单校验）多半是访客漏填，不报。
       if (status >= 400 && status < 500) return null;
       if (data.success === false) return ['rejected', message];
-      return null;
+      // 不是 WordPress 的成功答复（{}、[]、少了 success）：不能确定询盘收下了，主题也走不完成功流程。
+      return ['bad_response', `答复格式不对：${String(text).slice(0, 120)}`];
     }
     const title = (String(text).match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').trim();
     if (status >= 500) return ['server_error', title || String(text).slice(0, 200)];

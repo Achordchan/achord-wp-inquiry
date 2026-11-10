@@ -202,10 +202,12 @@ async function sendDingtalk(env, siteCfg, title, event, info, fetcher) {
     '',
     event.page ? `- 页面：${plain(event.page, 120)}` : '',
     event.ua ? `- 浏览器：${describeUa(event.ua)}` : '',
-    info.count > 1 ? `- 过去 1 小时：${info.count} 次，${info.visitors} 位访客` : '',
+    info.count > 1 ? `- 自上次钉钉提醒以来：${info.count} 次` : '',
     `- 时间：${sgt(info.now)}`,
     '',
-    `详情和失败前的操作见 GitHub Issue（1–2 分钟内生成）：[打开](${issues})`,
+    info.gitFailed
+      ? 'GitHub Issue 这次没开成（报警服务每小时自动重试），先按这条提醒处理。'
+      : `详情和失败前的操作见 GitHub Issue（1–2 分钟内生成）：[打开](${issues})`,
   ].filter((line, i, all) => line !== '' || (all[i - 1] !== '' && i > 0));
   const response = await fetcher(url, {
     method: 'POST',
@@ -239,13 +241,15 @@ export async function intake(env, event, { now = Math.floor(Date.now() / 1000), 
   }
 
   const key = `fp:${event.site}:${fp}`;
-  const state = (await readState(env, key)) || { first: now, lastSent: 0, lastDing: 0, pending: 0, visitors: [], total: 0 };
+  const state = (await readState(env, key)) || { first: now, lastSent: 0, lastDing: 0, pending: 0, dingCount: 0, visitors: [], total: 0 };
   state.total += 1;
   state.pending += 1;
+  state.dingCount = (state.dingCount || 0) + 1;
   if (visitor && !state.visitors.includes(visitor) && state.visitors.length < 50) state.visitors.push(visitor);
   state.sample = { ...event, steps: (event.steps || []).slice(-25) };
 
-  if (state.lastSent && now - state.lastSent < HOUR) {
+  const due = dueChannels(state, now);
+  if (!due.git && !due.ding) {
     await writeState(env, key, state);
     return 'held';
   }
@@ -253,7 +257,18 @@ export async function intake(env, event, { now = Math.floor(Date.now() / 1000), 
     await writeState(env, key, state);
     return 'capped';
   }
-  return (await send(env, siteCfg, key, fp, state, now, fetcher)) ? 'sent' : 'held';
+  return (await send(env, siteCfg, key, fp, state, now, fetcher, due)) && due.git ? 'sent' : 'held';
+}
+
+/**
+ * GitHub 和钉钉各算各的：GitHub 有没报的次数、离上次触发满 1 小时就该发；钉钉有没提醒过的次数、离上次推满 6 小时就该推。
+ * 一边出错（比如 GitHub 令牌过期）不耽误另一边，没发成的那边每小时补报时接着试。
+ */
+function dueChannels(state, now) {
+  return {
+    git: state.pending > 0 && (!state.lastSent || now - state.lastSent >= HOUR),
+    ding: (state.dingCount || 0) > 0 && (!state.lastDing || now - state.lastDing >= LIMITS.dingEvery),
+  };
 }
 
 /**
@@ -271,33 +286,40 @@ async function reserve(env, site, state, now) {
   return true;
 }
 
-async function send(env, siteCfg, key, fp, state, now, fetcher) {
+async function send(env, siteCfg, key, fp, state, now, fetcher, due) {
   const event = state.sample;
-  const info = { now, count: state.pending, visitors: Math.max(1, state.visitors.length) };
-  const text = compose(siteCfg, event, info);
-  // 先存下这条（没发出去时每小时补报会接着试），再往外发；GitHub、钉钉哪个出错都不影响另一个、也不丢状态。
+  // 先存下这条（没发出去时每小时补报会接着试），再往外发。
   await writeState(env, key, state);
   let ok = false;
-  try {
-    ok = await dispatchIssue(env, siteCfg, { fp, title: text.title, body: text.body, comment: text.comment, assignee: siteCfg.assignee || '' }, fetcher);
-  } catch {
-    ok = false;
-  }
-  if (ok && (!state.lastDing || now - state.lastDing >= LIMITS.dingEvery)) {
+  if (due.git) {
+    const info = { now, count: state.pending, visitors: Math.max(1, state.visitors.length) };
+    const text = compose(siteCfg, event, info);
     try {
-      if (await sendDingtalk(env, siteCfg, text.title, event, info, fetcher)) state.lastDing = now;
-    } catch { /* 钉钉不通：Issue 已开，6 小时内不再推，下次再试 */ }
+      ok = await dispatchIssue(env, siteCfg, { fp, title: text.title, body: text.body, comment: text.comment, assignee: siteCfg.assignee || '' }, fetcher);
+    } catch {
+      ok = false;
+    }
+    if (ok) {
+      state.lastSent = now;
+      state.pending = 0;
+      state.visitors = [];
+      await writeState(env, key, state);
+    }
   }
-  if (ok) {
-    state.lastSent = now;
-    state.pending = 0;
-    state.visitors = [];
+  if (due.ding) {
+    const title = compose(siteCfg, event, { now, count: 1, visitors: 1 }).title;
+    try {
+      if (await sendDingtalk(env, siteCfg, title, event, { now, count: state.dingCount || 1, gitFailed: due.git && !ok }, fetcher)) {
+        state.lastDing = now;
+        state.dingCount = 0;
+      }
+    } catch { /* 钉钉不通：每小时补报时再试 */ }
+    await writeState(env, key, state);
   }
-  await writeState(env, key, state);
   return ok;
 }
 
-/** 每小时：攒着没报的次数补报一条评论（满一小时的才报）。 */
+/** 每小时：攒着没报的次数补报一条评论（满一小时的才报），上次没推成的钉钉再推。 */
 export async function flush(env, { now = Math.floor(Date.now() / 1000), fetcher = fetch } = {}) {
   const all = sites(env);
   let cursor;
@@ -305,12 +327,14 @@ export async function flush(env, { now = Math.floor(Date.now() / 1000), fetcher 
     const page = await env.ALERTS.list({ prefix: 'fp:', cursor });
     for (const { name } of page.keys) {
       const state = await readState(env, name);
-      if (!state || state.pending <= 0 || (state.lastSent && now - state.lastSent < HOUR)) continue;
+      if (!state) continue;
+      const due = dueChannels(state, now);
+      if (!due.git && !due.ding) continue;
       const [, site, fp] = name.split(':');
       if (!all[site]) continue;
       // 当天新开的已到上限：等第二天。
       if (!state.lastSent && !(await reserve(env, site, state, now))) continue;
-      await send(env, all[site], name, fp, state, now, fetcher);
+      await send(env, all[site], name, fp, state, now, fetcher, due);
     }
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
@@ -324,9 +348,19 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
   const secret = siteSecret(env, site);
   const ua = 'Mozilla/5.0 (compatible; BOB-LIFT form self-check; +https://github.com/Achordchan)';
   const problems = [];
+  // 读答复内容：连接在中途断掉时 text() 会抛错，当成没收完整处理，不让错误跑出自检。
+  const readText = async (response) => {
+    try {
+      return { whole: true, text: await response.text() };
+    } catch (error) {
+      return { whole: false, text: `答复没收完整：${error?.message || error}` };
+    }
+  };
   const attempt = async () => {
     const page = await fetcher(check.page, { headers: { 'User-Agent': ua, Accept: 'text/html' }, redirect: 'follow' }).catch((e) => ({ status: 0, text: async () => String(e) }));
-    const html = await page.text();
+    const pageBody = await readText(page);
+    const html = pageBody.text;
+    if (!pageBody.whole) return [{ kind: 'check_page', status: page.status, detail: html, page: new URL(check.page).pathname }];
     if (page.status !== 200 || !html.includes(check.marker)) {
       return [{ kind: 'check_page', status: page.status, detail: page.status === 200 ? `页面上找不到表单（${check.marker}）` : html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '', page: new URL(check.page).pathname }];
     }
@@ -339,7 +373,9 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
       headers: { 'User-Agent': ua, Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded', 'X-Achord-Monitor': secret },
       body: form.toString(),
     }).catch((e) => ({ status: 0, text: async () => String(e) }));
-    const raw = await submit.text();
+    const submitBody = await readText(submit);
+    if (!submitBody.whole) return [{ kind: 'check_submit', status: submit.status, detail: submitBody.text }];
+    const raw = submitBody.text;
     let answer = null;
     try { answer = JSON.parse(raw); } catch { /* 下面报 */ }
     if (!answer || answer.success !== true) {
@@ -361,11 +397,13 @@ export async function selfCheck(env, site, siteCfg, { now = Math.floor(Date.now(
     }
     return found;
   };
-  let found = await attempt();
+  // 意外出错也当成提交失败报出来，不让一个站的错误打断别的站。
+  const safeAttempt = () => attempt().catch((error) => [{ kind: 'check_submit', status: 0, detail: `自检出错：${error?.message || error}` }]);
+  let found = await safeAttempt();
   // 一次失败可能是网络抖动：等一会儿再试一次，还不行才报。
   if (found.some((p) => ['check_page', 'check_nonce', 'check_submit'].includes(p.kind))) {
     if (wait) await sleep(wait);
-    found = await attempt();
+    found = await safeAttempt();
   }
   for (const problem of found) {
     problems.push({ site, form: 'inquiry', source: 'selfcheck', page: problem.page || (check.page ? new URL(check.page).pathname : ''), status: problem.status || 0, ...problem });

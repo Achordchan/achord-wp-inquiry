@@ -153,6 +153,28 @@ await flush(env, { now: T0 + 60, fetcher: net.fetcher });
 const afterDing = [...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'));
 check(ghCalls(net.calls).length === 1 && JSON.parse(afterDing[1]).lastSent === T0 + 60, '钉钉断网：Issue 照样记成已发，不会重复开');
 
+env = makeEnv();
+await intake(env, event, { now: T0, fetcher: fakeNet({ dingtalk: () => { throw new TypeError('ding down'); } }).fetcher });
+net = fakeNet();
+await flush(env, { now: T0 + 120, fetcher: net.fetcher });
+check(dingCalls(net.calls).length === 1 && ghCalls(net.calls).length === 0, '钉钉没推成的：下次补报只补推钉钉，不重复开 Issue');
+
+// GitHub 令牌失效：钉钉照样推，并说明 Issue 没开成。
+env = makeEnv();
+net = fakeNet({ 'api.github.com': () => new Response('bad credentials', { status: 401 }) });
+await intake(env, event, { now: T0, fetcher: net.fetcher });
+const dingText = JSON.parse(dingCalls(net.calls)[0]?.init.body || '{"markdown":{"text":""}}').markdown.text;
+check(dingCalls(net.calls).length === 1 && dingText.includes('没开成'), 'GitHub 调不通：钉钉照样推，写明 Issue 没开成');
+
+// 自检时页面或答复读到一半断了：报问题，不抛错。
+const broken = () => ({ status: 200, text: () => Promise.reject(new TypeError('connection reset')) });
+net = siteNet({ 'contact.html': broken });
+problems = await selfCheck(makeEnv(), 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
+check(problems[0]?.kind === 'check_page' && problems[0].detail.includes('没收完整'), '自检页面没收完整：报 check_page');
+net = siteNet({ 'boblift_inquiry_submit=1': broken });
+problems = await selfCheck(makeEnv(), 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
+check(problems[0]?.kind === 'check_submit' && problems[0].detail.includes('没收完整'), '自检提交答复没收完整：报 check_submit');
+
 // AlertDesk：同一时刻涌进来的同一个问题排队处理，只开一个 Issue，次数一条不丢。
 class FakeStorage {
   constructor() { this.map = new Map(); }

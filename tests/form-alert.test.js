@@ -8,7 +8,7 @@ let failures = 0;
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) failures++; };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function run({ search = '', reply } = {}) {
+function run({ search = '', reply, offline = false } = {}) {
   const beacons = [];
   const listeners = {};
   const winListeners = {};
@@ -35,12 +35,12 @@ function run({ search = '', reply } = {}) {
     window,
     location: { search, pathname: '/products/sq5/', hostname: 'site.test' },
     document: { documentElement: { lang: 'es' }, visibilityState: 'visible', addEventListener: (type, fn) => { listeners[type] = fn; } },
-    navigator: { userAgent: 'Mozilla/5.0 (iPhone) Safari', sendBeacon: (url, blob) => { beacons.push({ url, body: JSON.parse(blob.text) }); return true; } },
+    navigator: { onLine: !offline, userAgent: 'Mozilla/5.0 (iPhone) Safari', sendBeacon: (url, blob) => { beacons.push({ url, body: JSON.parse(blob.text) }); return true; } },
     Element, HTMLFormElement, Blob,
     URLSearchParams, JSON, Date, Object, String, Array, Number, Set, WeakMap, Math, Promise,
   };
   vm.runInNewContext(source, context);
-  return { window, beacons, listeners, winListeners, Element, HTMLFormElement };
+  return { window, beacons, listeners, winListeners, Element, HTMLFormElement, navigator: context.navigator };
 }
 
 const response = (status, body) => ({ status, clone: () => ({ text: () => Promise.resolve(body) }) });
@@ -104,6 +104,22 @@ const response = (status, body) => ({ status, clone: () => ({ text: () => Promis
   const got = await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' });
   await flush();
   check(got.status === 200 && r.beacons[0]?.body.kind === 'network' && r.beacons[0]?.body.status === 200 && String(r.beacons[0]?.body.detail).includes('答复没收完整'), '答复没收完整：上报 network');
+
+  // 答复是 JSON 但不是 WordPress 的成功格式：报 bad_response。
+  for (const odd of ['{}', '[]', '{"error":"x"}']) {
+    r = run({ reply: response(200, odd) });
+    await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' });
+    await flush();
+    check(r.beacons[0]?.body.kind === 'bad_response', `答复 ${odd}：报 bad_response`);
+  }
+
+  // 访客断网：先不发，网络回来再补发。
+  r = run({ offline: true, reply: () => Promise.reject(new TypeError('Failed to fetch')) });
+  try { await r.window.fetch('/?boblift_inquiry_submit=1', { method: 'POST' }); } catch { /* 主题照样拿到错误 */ }
+  check(r.beacons.length === 0, '断网时先不发报告');
+  r.navigator.onLine = true;
+  r.winListeners.online();
+  check(r.beacons.length === 1 && r.beacons[0].body.kind === 'network', '网络回来后补发');
 
   // 同一页同一种错误只报一次，一页最多报 3 次。
   r = run({ reply: response(500, '{}') });
