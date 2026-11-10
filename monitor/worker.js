@@ -174,7 +174,9 @@ export function describeUa(ua) {
 // 同类错误的指纹：站点 + 表单 + 类型 + 状态码 + 去掉数字的错误信息；按人数报的类型不看错误信息。
 export async function fingerprint(event) {
   const detail = CROWD[event.kind] ? '' : String(event.detail || '').toLowerCase().replace(/\d+/g, '#').slice(0, 80);
-  return (await sha([event.site, event.form, event.kind, event.status || 0, detail].join('|'))).slice(0, 12);
+  // 带密钥的上报（站点服务器、自检）和访客浏览器的分开记：谁都能发的浏览器上报改不了服务器报警的记录，也不会把它算进访客那份名额。
+  const lane = TRUSTED_SOURCES.includes(event.source) ? 'trusted' : 'public';
+  return (await sha([event.site, event.form, event.kind, event.status || 0, detail, lane].join('|'))).slice(0, 12);
 }
 
 function kindText(kind) {

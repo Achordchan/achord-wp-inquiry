@@ -135,13 +135,33 @@ function achord_inquiry_last_mail_error(?string $set = null): string
 function achord_inquiry_mail_result(bool $sent, int $post_id, string $lead_type = ''): void
 {
     if ($sent) {
-        update_option(ACHORD_INQUIRY_MAIL_OK, microtime(true), false); // 带微秒：同一秒里先成后败也分得出先后
+        achord_inquiry_mail_stamp(ACHORD_INQUIRY_MAIL_OK, microtime(true));
         return;
     }
     $reason = achord_inquiry_alert_redact(achord_inquiry_last_mail_error() ?: 'wp_mail 返回失败', 200);
-    // 失败时间和原因放同一个选项里一次写入，读到的时间和原因总是同一次失败的。
-    update_option(ACHORD_INQUIRY_MAIL_FAIL, ['at' => microtime(true), 'reason' => $reason], false);
+    achord_inquiry_mail_stamp(ACHORD_INQUIRY_MAIL_FAIL, microtime(true), $reason);
     achord_inquiry_alert('mail_failed', $reason, ['inquiry' => $post_id, 'form' => $lead_type ?: 'inquiry']);
+}
+
+/**
+ * 记一次发信结果：存成「时间|原因」，时间带微秒。用一条带条件的 UPDATE 只在新时间更晚时才写，
+ * 几封通知同时发完、写的先后乱了，记下的也总是最晚那次（时间和原因一起写，不会配错）。
+ */
+function achord_inquiry_mail_stamp(string $name, float $at, string $reason = ''): void
+{
+    global $wpdb;
+    $value = sprintf('%.6F|%s', $at, str_replace('|', '/', $reason));
+    $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, '0|', 'no')", $name));
+    $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND SUBSTRING_INDEX(option_value, '|', 1) + 0 < %f", $value, $name, $at));
+    wp_cache_delete($name, 'options');
+    wp_cache_delete('notoptions', 'options');
+}
+
+/** 读回一次发信结果：[时间, 原因]，没有记录是 [0, '']。 */
+function achord_inquiry_mail_read(string $name): array
+{
+    $parts = explode('|', (string) get_option($name, ''), 2);
+    return [(float) ($parts[0] ?? 0), (string) ($parts[1] ?? '')];
 }
 
 /** 这次请求是不是报警服务的每日自检（请求头 X-Achord-Monitor 等于报警密钥）。 */
@@ -165,8 +185,8 @@ function achord_inquiry_monitor_header_given(): bool
 /** 本站通知配置是否完好，自检答复里带给报警服务判断。 */
 function achord_inquiry_health(): array
 {
-    $fail = get_option(ACHORD_INQUIRY_MAIL_FAIL, []);
-    $fail = is_array($fail) ? $fail : [];
+    [$ok_at] = achord_inquiry_mail_read(ACHORD_INQUIRY_MAIL_OK);
+    [$fail_at, $fail_reason] = achord_inquiry_mail_read(ACHORD_INQUIRY_MAIL_FAIL);
     $options = achord_inquiry_options();
     $turnstile = $options['turnstile_enabled'] === '1';
     // 最近一条真实询盘（已发布，不含被拦截的草稿，也不含标了无效的垃圾询盘）的时间，报警服务据此发现「很久没有询盘」。
@@ -186,9 +206,9 @@ function achord_inquiry_health(): array
         'turnstile_on' => $turnstile,
         'turnstile_ready' => !$turnstile || achord_inquiry_turnstile_enabled(),
         'dingtalk' => function_exists('achord_dingtalk_dispatch'),
-        'mail_ok_at' => (float) get_option(ACHORD_INQUIRY_MAIL_OK, 0),
-        'mail_fail_at' => (float) ($fail['at'] ?? 0),
-        'mail_fail_reason' => (string) ($fail['reason'] ?? ''),
+        'mail_ok_at' => $ok_at,
+        'mail_fail_at' => $fail_at,
+        'mail_fail_reason' => $fail_reason,
         'last_inquiry_at' => $latest_at,
     ];
 }

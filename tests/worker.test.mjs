@@ -211,6 +211,16 @@ net = fakeNet();
 for (let i = 0; i < 6; i++) await intake(env, { ...event, kind: 'network', detail: `spam ${'abcdef'[i]}` }, { now: T0, fetcher: net.fetcher });
 check(await intake(env, { site: 'bobliftcrane.com', source: 'server', kind: 'mail_failed', form: 'inquiry', detail: 'SMTP down', status: 0 }, { now: T0, fetcher: net.fetcher }) === 'sent', '浏览器那份名额满了，服务器上报的发信失败照样开 Issue');
 check(await intake(env, { site: 'bobliftcrane.com', source: 'selfcheck', kind: 'check_submit', form: 'inquiry', detail: 'x', status: 500 }, { now: T0, fetcher: net.fetcher }) === 'sent', '自检发现的问题照样开 Issue');
+{
+  // 浏览器上报同样的「存不进后台」：和服务器上报分开记，改不了服务器那条的来源、询盘编号和名额。
+  const e4 = makeEnv();
+  const n4 = fakeNet({ 'api.github.com': () => new Response('down', { status: 502 }) });
+  const serverSave = { site: 'bobliftcrane.com', source: 'server', kind: 'save_failed', form: 'inquiry', detail: 'DB gone', inquiry: 0, status: 0 };
+  await intake(e4, serverSave, { now: T0, fetcher: n4.fetcher });
+  await intake(e4, { ...serverSave, source: 'browser', inquiry: 0, visitor: 'zz', detail: 'DB gone' }, { now: T0 + 1, fetcher: n4.fetcher });
+  const states = [...e4.ALERTS.map.entries()].filter(([k]) => k.startsWith('fp:')).map(([, v]) => JSON.parse(v));
+  check(states.length === 2 && states.some((st) => st.sample.source === 'server' && st.total === 1), '服务器和浏览器报的同一种错误分开记，浏览器那条改不了服务器那条');
+}
 
 // 触发成功不等于 Issue 开成：补报时核对流程运行，失败或查不到就重发。
 const runsReply = (runs) => () => new Response(JSON.stringify({ workflow_runs: runs }), { status: 200 });

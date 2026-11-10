@@ -127,6 +127,19 @@ class FakeWpdb
     public function query($q)
     {
         [$sql, $args] = $q;
+        // 发信结果：「时间|原因」，只在新时间更晚时才写（和 MySQL 的条件 UPDATE 一样）。
+        if (str_contains($sql, "VALUES (%s, '0|', 'no')")) {
+            $GLOBALS['options'][$args[0]] ??= '0|';
+            return 1;
+        }
+        if (str_contains($sql, "SUBSTRING_INDEX(option_value, '|', 1)")) {
+            [$value, $name, $at] = $args;
+            if ((float) explode('|', (string) ($GLOBALS['options'][$name] ?? '0|'))[0] < $at) {
+                $GLOBALS['options'][$name] = $value;
+                return 1;
+            }
+            return 0;
+        }
         if (str_starts_with($sql, 'INSERT IGNORE') && count($args) === 2) {
             if (isset($this->locks[$args[0]])) {
                 return 0;
@@ -670,17 +683,26 @@ $GLOBALS['posts_sent'] = [];
 $GLOBALS['mail_fails'] = true;
 $r = submit(['name' => 'Bob', 'email' => 'bob@client.test', 'product' => 'SQ5 Crane', 'message' => 'Need a crane for my truck']);
 $GLOBALS['mail_fails'] = false;
-$health = get_option(ACHORD_INQUIRY_MAIL_FAIL);
-check(($health['at'] ?? 0) > 0 && str_contains($health['reason'] ?? '', 'SMTP connect() failed') && !str_contains($health['reason'] ?? '', 'ops@example.com'), '记下发信失败和原因，隐去邮箱');
+[$failAt, $failReason] = achord_inquiry_mail_read(ACHORD_INQUIRY_MAIL_FAIL);
+check($failAt > 0 && str_contains($failReason, 'SMTP connect() failed') && !str_contains($failReason, 'ops@example.com'), '记下发信失败和原因，隐去邮箱');
 $alerts = array_values(array_filter($GLOBALS['posts_sent'], fn($p) => str_ends_with($p['url'], '/server')));
 $alert = $alerts ? json_decode($alerts[0]['args']['body'], true) : [];
 check(count($alerts) === 1 && $alerts[0]['url'] === 'https://alert.example.com/server' && $alerts[0]['args']['headers']['Authorization'] === 'Bearer ' . $secret && $alerts[0]['args']['blocking'] === false, '发信失败报给报警服务，带密钥、不等答复');
 check(($alert['kind'] ?? '') === 'mail_failed' && ($alert['inquiry'] ?? 0) === $r->data['id'] && !str_contains($alerts[0]['args']['body'], 'bob@client.test') && !str_contains($alerts[0]['args']['body'], 'Need a crane'), '报警只带询盘编号和原因，不带客户资料');
 $r = submit(['name' => 'Cy', 'email' => 'cy@client.test', 'product' => 'SQ5 Crane', 'message' => 'Need a crane']);
-check(is_float(get_option(ACHORD_INQUIRY_MAIL_OK, 0)) && get_option(ACHORD_INQUIRY_MAIL_OK, 0) > (get_option(ACHORD_INQUIRY_MAIL_FAIL)['at'] ?? 0), '发成功也记下时间（带微秒，分得出同一秒里的先后）');
-check((get_option(ACHORD_INQUIRY_MAIL_FAIL)['at'] ?? 0) > 0 && str_contains(get_option(ACHORD_INQUIRY_MAIL_FAIL)['reason'] ?? '', 'SMTP'), '发成功不盖掉之前记下的失败');
+[$okAt] = achord_inquiry_mail_read(ACHORD_INQUIRY_MAIL_OK);
+check($okAt > $failAt, '发成功也记下时间（带微秒，分得出同一秒里的先后）');
+check(achord_inquiry_mail_read(ACHORD_INQUIRY_MAIL_FAIL)[0] === $failAt && str_contains(achord_inquiry_mail_read(ACHORD_INQUIRY_MAIL_FAIL)[1], 'SMTP'), '发成功不盖掉之前记下的失败');
 $health = achord_inquiry_health();
 check($health['mail_ok_at'] > 0 && $health['mail_fail_at'] > 0 && str_contains($health['mail_fail_reason'], 'SMTP'), '自检答复里成功、失败两边都在');
+// 写的先后乱了：更早的那次晚到，不能把更晚的时间改回去；时间和原因一起写，不会配错。
+achord_inquiry_mail_stamp(ACHORD_INQUIRY_MAIL_FAIL, 2000000000.5, 'later');
+achord_inquiry_mail_stamp(ACHORD_INQUIRY_MAIL_FAIL, 2000000000.25, 'earlier');
+check(achord_inquiry_mail_read(ACHORD_INQUIRY_MAIL_FAIL) === [2000000000.5, 'later'], '晚到的旧结果不会把时间往回改，原因跟着最晚那次');
+achord_inquiry_mail_stamp(ACHORD_INQUIRY_MAIL_OK, 2000000000.75);
+achord_inquiry_mail_stamp(ACHORD_INQUIRY_MAIL_OK, 2000000000.1);
+check(achord_inquiry_mail_read(ACHORD_INQUIRY_MAIL_OK)[0] === 2000000000.75, '发成功的时间也只往前走');
+check(in_array([ACHORD_INQUIRY_MAIL_OK, 'options'], $GLOBALS['cache_deletes'] ?? [], true), '写完清掉选项缓存，读到的是库里最新的');
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);
