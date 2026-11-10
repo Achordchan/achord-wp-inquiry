@@ -649,6 +649,14 @@ $GLOBALS['delete_fails'] = true;
 $r = submit(['name' => 'Self-check', 'email' => 'monitor@example.com', 'message' => 'self-check']);
 check(!$r->success && $r->status === 500 && str_contains((string) ($r->data['message'] ?? ''), '删不掉'), '自检询盘删不掉：答复失败，不说自检正常');
 $GLOBALS['delete_fails'] = false;
+
+// 清掉报警地址（密钥还留着）：报警关了，自检请求不认，拒收。
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_url'] = '';
+check(!achord_inquiry_is_monitor(), '报警地址清掉了：自检不认');
+$savedBefore = count($GLOBALS['inserted'] ?? []);
+$r = submit(['name' => 'Self-check', 'email' => 'monitor@example.com', 'message' => 'self-check']);
+check(!$r->success && $r->status === 403 && ($r->data['code'] ?? '') === 'monitorRejected' && count($GLOBALS['inserted'] ?? []) === $savedBefore, '报警关了：自检提交拒收，不存');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_url'] = 'https://alert.example.com/';
 unset($_SERVER['HTTP_X_ACHORD_MONITOR']);
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_enabled'] = '0';
 
@@ -662,14 +670,17 @@ $GLOBALS['posts_sent'] = [];
 $GLOBALS['mail_fails'] = true;
 $r = submit(['name' => 'Bob', 'email' => 'bob@client.test', 'product' => 'SQ5 Crane', 'message' => 'Need a crane for my truck']);
 $GLOBALS['mail_fails'] = false;
-$health = get_option(ACHORD_INQUIRY_MAIL_HEALTH);
-check(($health['fail_at'] ?? 0) > 0 && str_contains($health['fail_reason'] ?? '', 'SMTP connect() failed') && !str_contains($health['fail_reason'] ?? '', 'ops@example.com'), '记下发信失败和原因，隐去邮箱');
+$health = get_option(ACHORD_INQUIRY_MAIL_FAIL);
+check(($health['at'] ?? 0) > 0 && str_contains($health['reason'] ?? '', 'SMTP connect() failed') && !str_contains($health['reason'] ?? '', 'ops@example.com'), '记下发信失败和原因，隐去邮箱');
 $alerts = array_values(array_filter($GLOBALS['posts_sent'], fn($p) => str_ends_with($p['url'], '/server')));
 $alert = $alerts ? json_decode($alerts[0]['args']['body'], true) : [];
 check(count($alerts) === 1 && $alerts[0]['url'] === 'https://alert.example.com/server' && $alerts[0]['args']['headers']['Authorization'] === 'Bearer ' . $secret && $alerts[0]['args']['blocking'] === false, '发信失败报给报警服务，带密钥、不等答复');
 check(($alert['kind'] ?? '') === 'mail_failed' && ($alert['inquiry'] ?? 0) === $r->data['id'] && !str_contains($alerts[0]['args']['body'], 'bob@client.test') && !str_contains($alerts[0]['args']['body'], 'Need a crane'), '报警只带询盘编号和原因，不带客户资料');
 $r = submit(['name' => 'Cy', 'email' => 'cy@client.test', 'product' => 'SQ5 Crane', 'message' => 'Need a crane']);
-check((get_option(ACHORD_INQUIRY_MAIL_HEALTH)['ok_at'] ?? 0) > 0, '发成功也记下时间');
+check((int) get_option(ACHORD_INQUIRY_MAIL_OK, 0) > 0, '发成功也记下时间');
+check((get_option(ACHORD_INQUIRY_MAIL_FAIL)['at'] ?? 0) > 0 && str_contains(get_option(ACHORD_INQUIRY_MAIL_FAIL)['reason'] ?? '', 'SMTP'), '发成功不盖掉之前记下的失败');
+$health = achord_inquiry_health();
+check($health['mail_ok_at'] > 0 && $health['mail_fail_at'] > 0 && str_contains($health['mail_fail_reason'], 'SMTP'), '自检答复里成功、失败两边都在');
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);

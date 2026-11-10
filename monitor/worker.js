@@ -288,21 +288,30 @@ export async function intake(env, event, { now = Math.floor(Date.now() / 1000), 
   const fp = await fingerprint(event);
   const visitor = event.visitor || '';
 
-  // 按人数报的：先攒这一小时里的不同访客。
+  // 按人数报的：先攒这一小时里的不同访客和次数。够人数那一次把攒下的次数和访客一并记进去，之后每条照常记一次。
+  let count = 1;
+  let crowdVisitors = visitor ? [visitor] : [];
   if (CROWD[event.kind]) {
     const crowdKey = `crowd:${event.site}:${fp}:${Math.floor(now / HOUR)}`;
-    const crowd = (await readState(env, crowdKey)) || { visitors: [] };
-    if (visitor && !crowd.visitors.includes(visitor)) crowd.visitors.push(visitor);
+    const crowd = (await readState(env, crowdKey)) || { visitors: [], count: 0, carried: false };
+    crowd.count = (crowd.count || 0) + 1;
+    if (visitor && !crowd.visitors.includes(visitor) && crowd.visitors.length < 50) crowd.visitors.push(visitor);
+    const reached = crowd.visitors.length >= CROWD[event.kind];
+    if (reached && !crowd.carried) {
+      count = crowd.count;
+      crowdVisitors = crowd.visitors;
+      crowd.carried = true;
+    }
     await writeState(env, crowdKey, crowd, 2 * HOUR);
-    if (crowd.visitors.length < CROWD[event.kind]) return 'crowd';
+    if (!reached) return 'crowd';
   }
 
   const key = `fp:${event.site}:${fp}`;
   const state = (await readState(env, key)) || { first: now, lastSent: 0, lastDing: 0, pending: 0, dingCount: 0, visitors: [], total: 0 };
-  state.total += 1;
-  state.pending += 1;
-  state.dingCount = (state.dingCount || 0) + 1;
-  if (visitor && !state.visitors.includes(visitor) && state.visitors.length < 50) state.visitors.push(visitor);
+  state.total += count;
+  state.pending += count;
+  state.dingCount = (state.dingCount || 0) + count;
+  for (const v of crowdVisitors) if (!state.visitors.includes(v) && state.visitors.length < 50) state.visitors.push(v);
   state.sample = { ...event, steps: (event.steps || []).slice(-25) };
 
   const due = dueChannels(state, now);

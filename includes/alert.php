@@ -16,7 +16,9 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-const ACHORD_INQUIRY_MAIL_HEALTH = 'achord_inquiry_mail_health';
+// 发信成功、发信失败分两个选项存：两封通知同时发完时各写各的，成功不会盖掉同时发生的失败，反过来也一样。
+const ACHORD_INQUIRY_MAIL_OK = 'achord_inquiry_mail_ok_at';
+const ACHORD_INQUIRY_MAIL_FAIL = 'achord_inquiry_mail_fail';
 
 /** 报警服务的地址（只认 https，去掉末尾斜杠）；没填返回空串，三条路都不启用。 */
 function achord_inquiry_alert_endpoint(): string
@@ -132,26 +134,26 @@ function achord_inquiry_last_mail_error(?string $set = null): string
 /** 记下通知邮件最近一次发成功、发失败的时间，自检答复里带上；失败就报警。 */
 function achord_inquiry_mail_result(bool $sent, int $post_id, string $lead_type = ''): void
 {
-    $health = get_option(ACHORD_INQUIRY_MAIL_HEALTH, []);
-    $health = is_array($health) ? $health : [];
     if ($sent) {
-        $health['ok_at'] = time();
-    } else {
-        $health['fail_at'] = time();
-        $health['fail_reason'] = achord_inquiry_alert_redact(achord_inquiry_last_mail_error() ?: 'wp_mail 返回失败', 200);
+        update_option(ACHORD_INQUIRY_MAIL_OK, time(), false);
+        return;
     }
-    update_option(ACHORD_INQUIRY_MAIL_HEALTH, $health, false);
-    if (!$sent) {
-        achord_inquiry_alert('mail_failed', (string) $health['fail_reason'], ['inquiry' => $post_id, 'form' => $lead_type ?: 'inquiry']);
-    }
+    $reason = achord_inquiry_alert_redact(achord_inquiry_last_mail_error() ?: 'wp_mail 返回失败', 200);
+    // 失败时间和原因放同一个选项里一次写入，读到的时间和原因总是同一次失败的。
+    update_option(ACHORD_INQUIRY_MAIL_FAIL, ['at' => time(), 'reason' => $reason], false);
+    achord_inquiry_alert('mail_failed', $reason, ['inquiry' => $post_id, 'form' => $lead_type ?: 'inquiry']);
 }
 
 /** 这次请求是不是报警服务的每日自检（请求头 X-Achord-Monitor 等于报警密钥）。 */
 function achord_inquiry_is_monitor(): bool
 {
+    // 报警关掉了（地址或密钥没填好）就不认自检：清掉地址就能停掉每日自检，被拦下的自检请求走上面的拒收。
+    if (!achord_inquiry_alert_enabled()) {
+        return false;
+    }
     $secret = achord_inquiry_alert_secret();
     $given = (string) ($_SERVER['HTTP_X_ACHORD_MONITOR'] ?? '');
-    return $secret !== '' && $given !== '' && hash_equals($secret, $given);
+    return $given !== '' && hash_equals($secret, $given);
 }
 
 /** 请求带了自检请求头（不管对不对）。认不出的自检请求要拒收，不能当真询盘收下。 */
@@ -163,8 +165,8 @@ function achord_inquiry_monitor_header_given(): bool
 /** 本站通知配置是否完好，自检答复里带给报警服务判断。 */
 function achord_inquiry_health(): array
 {
-    $mail = get_option(ACHORD_INQUIRY_MAIL_HEALTH, []);
-    $mail = is_array($mail) ? $mail : [];
+    $fail = get_option(ACHORD_INQUIRY_MAIL_FAIL, []);
+    $fail = is_array($fail) ? $fail : [];
     $options = achord_inquiry_options();
     $turnstile = $options['turnstile_enabled'] === '1';
     // 最近一条真实询盘（已发布，不含被拦截的草稿，也不含标了无效的垃圾询盘）的时间，报警服务据此发现「很久没有询盘」。
@@ -184,9 +186,9 @@ function achord_inquiry_health(): array
         'turnstile_on' => $turnstile,
         'turnstile_ready' => !$turnstile || achord_inquiry_turnstile_enabled(),
         'dingtalk' => function_exists('achord_dingtalk_dispatch'),
-        'mail_ok_at' => (int) ($mail['ok_at'] ?? 0),
-        'mail_fail_at' => (int) ($mail['fail_at'] ?? 0),
-        'mail_fail_reason' => (string) ($mail['fail_reason'] ?? ''),
+        'mail_ok_at' => (int) get_option(ACHORD_INQUIRY_MAIL_OK, 0),
+        'mail_fail_at' => (int) ($fail['at'] ?? 0),
+        'mail_fail_reason' => (string) ($fail['reason'] ?? ''),
         'last_inquiry_at' => $latest_at,
     ];
 }

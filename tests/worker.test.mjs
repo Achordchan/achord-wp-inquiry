@@ -69,6 +69,18 @@ check(await intake(env, { ...verify, visitor: 'a' }, { now: T0, fetcher: net.fet
 check(await intake(env, { ...verify, visitor: 'a' }, { now: T0 + 1, fetcher: net.fetcher }) === 'crowd', '同一位再试：还是不报');
 check(await intake(env, { ...verify, visitor: 'b' }, { now: T0 + 2, fetcher: net.fetcher }) === 'crowd', '第二位：不报');
 check(await intake(env, { ...verify, visitor: 'c' }, { now: T0 + 3, fetcher: net.fetcher }) === 'sent', '一小时内第三位不同访客：报');
+{
+  const sent = ghCalls(net.calls).map((c) => JSON.parse(JSON.parse(c.init.body).inputs.payload));
+  const fpKey = [...env.ALERTS.map.keys()].find((k) => k.startsWith('fp:'));
+  const st = await env.ALERTS.get(fpKey, 'json');
+  check(sent.length === 1 && sent[0].body.includes('过去 1 小时 4 次，涉及 3 位访客') && st.total === 4 && st.awaiting.count === 4, '够人数那次把之前攒的次数和访客一并算上（4 次、3 位）');
+}
+check(await intake(env, { ...verify, visitor: 'd' }, { now: T0 + 4, fetcher: net.fetcher }) === 'held', '够人数之后再来：照常合并');
+{
+  const fpKey = [...env.ALERTS.map.keys()].find((k) => k.startsWith('fp:'));
+  const st = await env.ALERTS.get(fpKey, 'json');
+  check(st.total === 5 && st.pending === 1 && st.visitors.join() === 'd', '之后每条只记一次，不重复算攒下的');
+}
 
 // 每站每天最多新开 5 种。
 env = makeEnv();
