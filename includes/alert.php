@@ -57,6 +57,24 @@ function achord_inquiry_enqueue_alert_script(): void
     ]) . ';', 'before');
 }
 
+/**
+ * 页头最前面放一小段记录器：人机验证脚本如果在报警脚本（页脚、defer）运行之前就加载失败，这个失败事件不会重放，
+ * 报警脚本就看不到。记录器先把失败的地址记下，报警脚本启动后补报。
+ */
+function achord_inquiry_print_alert_early(): void
+{
+    if (achord_inquiry_alert_endpoint() === '') {
+        return;
+    }
+    $js = "window.achordFormAlertEarly=[];window.addEventListener('error',function(e){var t=e.target;"
+        . "if(t&&t.tagName==='SCRIPT'&&String(t.src||'').indexOf('challenges.cloudflare.com')>-1){window.achordFormAlertEarly.push(String(t.src))}},true);";
+    if (function_exists('wp_print_inline_script_tag')) {
+        wp_print_inline_script_tag($js, ['id' => 'achord-form-alert-early']);
+    } else {
+        echo '<script id="achord-form-alert-early">' . $js . "</script>\n";
+    }
+}
+
 /** 去掉看起来像邮箱、电话的串，再截短：错误信息里万一带了访客填的内容，也不会报出去。 */
 function achord_inquiry_alert_redact(string $text, int $length = 300): string
 {
@@ -186,6 +204,8 @@ function achord_inquiry_monitor_answer(array $fields): void
 function achord_inquiry_alert_hooks(): void
 {
     add_action('wp_enqueue_scripts', 'achord_inquiry_enqueue_alert_script');
+    // 第 1 位：比主题、插件在页头打印的脚本都早（WordPress 的页头脚本在第 8 位）。
+    add_action('wp_head', 'achord_inquiry_print_alert_early', 1);
     add_action('wp_mail_failed', static function ($error): void {
         achord_inquiry_last_mail_error(is_object($error) && method_exists($error, 'get_error_message') ? (string) $error->get_error_message() : '');
     });

@@ -8,7 +8,7 @@ let failures = 0;
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) failures++; };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function run({ search = '', reply, offline = false } = {}) {
+function run({ search = '', reply, offline = false, early } = {}) {
   const beacons = [];
   const listeners = {};
   const winListeners = {};
@@ -25,6 +25,7 @@ function run({ search = '', reply, offline = false } = {}) {
     return Promise.resolve(reply);
   };
   const window = {
+    ...(early ? { achordFormAlertEarly: early } : {}),
     achordFormAlertConfig: { endpoint: 'https://alert.test/report', site: 'site.test', watch: ['boblift_inquiry_submit=1', 'boblift_catalog_request=1'] },
     fetch: fakeFetch,
     innerWidth: 390,
@@ -150,6 +151,8 @@ const response = (status, body) => ({ status, clone: () => ({ text: () => Promis
   r = run();
   r.winListeners.error({ target: { tagName: 'SCRIPT', src: 'https://challenges.cloudflare.com/turnstile/v0/api.js' } });
   check(r.beacons[0]?.body.kind === 'turnstile_load', '验证码脚本加载失败：上报');
+  r = run({ early: ['https://challenges.cloudflare.com/turnstile/v0/api.js'] });
+  check(r.beacons[0]?.body.kind === 'turnstile_load', '验证码脚本在报警脚本之前就失败了（页头记录器记下）：补报');
 
   // 隐去邮箱电话。
   check(r.window.achordFormAlert._redact('call +86 158 5249 9415 or a@b.co') === 'call [已隐去] or [已隐去]', '隐去电话和邮箱');

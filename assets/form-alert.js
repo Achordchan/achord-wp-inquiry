@@ -215,6 +215,12 @@
     const file = String(event.filename || '').split('/').pop().split('?')[0];
     step(`脚本报错：${event.message || ''}${file ? ' @' + file + ':' + (event.lineno || 0) : ''}`);
   }, true);
+  // 报警脚本运行之前就失败了的验证码脚本（页头记录器记下的）：补报。
+  const early = Array.isArray(window.achordFormAlertEarly) ? window.achordFormAlertEarly : [];
+  if (early.length) {
+    step('验证码脚本加载失败（页面打开时）');
+    report('turnstile_load', String(early[0]).slice(0, 120));
+  }
   window.addEventListener('unhandledrejection', (event) => {
     lastErrorAt = Date.now();
     step(`脚本报错：${String(event.reason?.message || event.reason || '').slice(0, 100)}`);

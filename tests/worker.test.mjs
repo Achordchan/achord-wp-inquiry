@@ -29,7 +29,7 @@ function fakeNet(handlers = {}) {
   };
   return { calls, fetcher };
 }
-const ghCalls = (calls) => calls.filter((c) => c.url.includes('api.github.com'));
+const ghCalls = (calls) => calls.filter((c) => c.url.includes('/dispatches'));
 const dingCalls = (calls) => calls.filter((c) => c.url.includes('dingtalk'));
 const T0 = 1794300000;
 const event = { site: 'bobliftcrane.com', source: 'browser', kind: 'server_error', form: 'inquiry', status: 502, detail: 'Bad Gateway (ref 1001)', page: '/products/sq5/', ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) Version/17.4 Mobile/15E148 Safari/604.1', steps: ['0s 打开 /products/sq5/', '3.2s 点击 button「Get a quote」'], visitor: 'v1' };
@@ -144,7 +144,7 @@ net = fakeNet({ 'api.github.com': () => new Response('bad', { status: 502 }) });
 await intake(env, event, { now: T0, fetcher: net.fetcher });
 for (let i = 1; i <= 6; i++) await flush(env, { now: T0 + i * 3700, fetcher: net.fetcher });
 const capDay = new Date((T0 + 6 * 3700) * 1000).toISOString().slice(0, 10) === new Date(T0 * 1000).toISOString().slice(0, 10);
-check(!capDay || (await env.ALERTS.get(`cap:bobliftcrane.com:${new Date(T0 * 1000).toISOString().slice(0, 10)}`)) === '1', '重试不重复占名额');
+check(!capDay || (await env.ALERTS.get(`cap:bobliftcrane.com:public:${new Date(T0 * 1000).toISOString().slice(0, 10)}`)) === '1', '重试不重复占名额');
 check(await intake(env, { ...event, kind: 'network', detail: 'other' }, { now: T0 + 10, fetcher: fakeNet().fetcher }) === 'sent', '别的问题照样能新开');
 
 // GitHub 请求直接抛错（断网）：先存下，补报时再发；钉钉抛错不影响 Issue 记成已发。
@@ -177,6 +177,51 @@ check(problems[0]?.kind === 'check_page' && problems[0].detail.includes('没收�
 net = siteNet({ 'boblift_inquiry_submit=1': broken });
 problems = await selfCheck(makeEnv(), 'bobliftcrane.com', SITES['bobliftcrane.com'], { now: T0, fetcher: net.fetcher, wait: 0 });
 check(problems[0]?.kind === 'check_submit' && problems[0].detail.includes('没收完整'), '自检提交答复没收完整：报 check_submit');
+
+// 浏览器上报的新开名额被乱发占满：服务器上报、自检照样能开（名额分开算）。
+env = makeEnv();
+net = fakeNet();
+for (let i = 0; i < 6; i++) await intake(env, { ...event, kind: 'network', detail: `spam ${'abcdef'[i]}` }, { now: T0, fetcher: net.fetcher });
+check(await intake(env, { site: 'bobliftcrane.com', source: 'server', kind: 'mail_failed', form: 'inquiry', detail: 'SMTP down', status: 0 }, { now: T0, fetcher: net.fetcher }) === 'sent', '浏览器那份名额满了，服务器上报的发信失败照样开 Issue');
+check(await intake(env, { site: 'bobliftcrane.com', source: 'selfcheck', kind: 'check_submit', form: 'inquiry', detail: 'x', status: 500 }, { now: T0, fetcher: net.fetcher }) === 'sent', '自检发现的问题照样开 Issue');
+
+// 触发成功不等于 Issue 开成：补报时核对流程运行，失败或查不到就重发。
+const runsReply = (runs) => () => new Response(JSON.stringify({ workflow_runs: runs }), { status: 200 });
+const fpOf = async () => JSON.parse(JSON.parse(ghCalls(net.calls)[0].init.body).inputs.payload).fp;
+env = makeEnv();
+net = fakeNet();
+await intake(env, event, { now: T0, fetcher: net.fetcher });
+let fpNow = await fpOf();
+const runAt = new Date((T0 + 5) * 1000).toISOString();
+net = fakeNet({ '/runs?': runsReply([{ display_title: `表单报警 ${fpNow}`, status: 'completed', conclusion: 'failure', created_at: runAt }]) });
+await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
+const resent = JSON.parse(JSON.parse(ghCalls(net.calls)[0]?.init.body || '{"inputs":{"payload":"{}"}}').inputs.payload);
+check(ghCalls(net.calls).length === 1 && resent.title?.includes('服务器出错'), '流程跑失败：补报时把这次退回来重发');
+check(net.calls.some((c) => c.url.includes('/actions/workflows/form-alert.yml/runs?') && c.url.includes('event=workflow_dispatch')), '核对时查的是这个流程的手动触发运行');
+
+env = makeEnv();
+net = fakeNet();
+await intake(env, event, { now: T0, fetcher: net.fetcher });
+fpNow = await fpOf();
+net = fakeNet({ '/runs?': runsReply([{ display_title: `表单报警 ${fpNow}`, status: 'completed', conclusion: 'success', created_at: runAt }]) });
+await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
+const settled = JSON.parse([...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'))[1]);
+check(ghCalls(net.calls).length === 0 && !settled.awaiting, '流程跑成了：放下，不重发');
+
+env = makeEnv();
+net = fakeNet();
+await intake(env, event, { now: T0, fetcher: net.fetcher });
+net = fakeNet({ '/runs?': runsReply([]) });
+await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
+check(ghCalls(net.calls).length === 1, '过了 30 分钟还查不到这次运行：当没跑成，重发');
+
+env = makeEnv();
+net = fakeNet();
+await intake(env, event, { now: T0, fetcher: net.fetcher });
+net = fakeNet({ '/runs?': () => new Response('rate limited', { status: 403 }) });
+await flush(env, { now: T0 + 3700, fetcher: net.fetcher });
+const unsettled = JSON.parse([...env.ALERTS.map.entries()].find(([k]) => k.startsWith('fp:'))[1]);
+check(ghCalls(net.calls).length === 0 && unsettled.awaiting, '查不了运行记录：这次先不核对，也不乱重发');
 
 // AlertDesk：同一时刻涌进来的同一个问题排队处理，只开一个 Issue，次数一条不丢。
 class FakeStorage {

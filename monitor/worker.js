@@ -51,7 +51,14 @@ const CHECK_KINDS = {
 };
 // 单个访客失败不算故障，一小时内这么多位不同访客都失败才报。
 const CROWD = { verification: 3, rate_limited: 3 };
+// newIssuesPerSiteDay 分两份：访客浏览器上报（谁都能发，可能被人乱发）一份，站点服务器上报和自检（带密钥）一份，
+// 乱发的占满了自己那份，也挤不掉真正的保存失败、发信失败、自检报警。
 const LIMITS = { perIpHour: 10, newIssuesPerSiteDay: 5, dingEvery: 6 * HOUR, keepState: 7 * 24 * HOUR };
+const TRUSTED_SOURCES = ['server', 'selfcheck'];
+// 触发开 Issue 的流程后多久去核对它跑成没有；超过 CONFIRM_GIVE_UP 还查不到这次运行就当没跑成，重新触发。
+const CONFIRM_AFTER = 5 * 60;
+const CONFIRM_GIVE_UP = 30 * 60;
+const RUN_TITLE = (fp) => `表单报警 ${fp}`;
 // 请求体上限（字节）：浏览器上报带 25 步足迹，16 KB 足够；服务器上报只有几个字段。
 const BODY_LIMIT = { '/report': 16 * 1024, '/server': 4 * 1024 };
 // 往 GitHub、钉钉发请求最多等这么久（毫秒），连读答复在内；超时算没发成，补报时再试，不卡住后面的报警。
@@ -329,7 +336,8 @@ function dueChannels(state, now) {
 async function reserve(env, site, state, now) {
   const day = new Date(now * 1000).toISOString().slice(0, 10);
   if (state.reserved === day) return true;
-  const capKey = `cap:${site}:${day}`;
+  const lane = TRUSTED_SOURCES.includes(state.sample?.source) ? 'trusted' : 'public';
+  const capKey = `cap:${site}:${lane}:${day}`;
   const used = Number(await env.ALERTS.get(capKey)) || 0;
   if (used >= LIMITS.newIssuesPerSiteDay) return false;
   await env.ALERTS.put(capKey, String(used + 1), { expirationTtl: 2 * 24 * HOUR });
@@ -351,6 +359,12 @@ async function send(env, siteCfg, key, fp, state, now, fetcher, due) {
       ok = false;
     }
     if (ok) {
+      // GitHub 收下了触发请求，不等于 Issue 开成了：记下这次，每小时补报时查流程跑成没有，没跑成就把次数退回来重发。
+      state.awaiting = {
+        at: now,
+        count: info.count + (state.awaiting?.count || 0),
+        prevLastSent: state.awaiting ? state.awaiting.prevLastSent : state.lastSent,
+      };
       state.lastSent = now;
       state.pending = 0;
       state.visitors = [];
@@ -364,12 +378,13 @@ async function send(env, siteCfg, key, fp, state, now, fetcher, due) {
     const title = compose(siteCfg, event, { now, count: 1, visitors: 1 }).title;
     let pushed = false;
     try {
-      pushed = await sendDingtalk(env, siteCfg, title, event, { now, count: state.dingCount || 1, gitFailed: due.git && !ok }, fetcher);
+      pushed = await sendDingtalk(env, siteCfg, title, event, { now, count: state.dingCount || 1, gitFailed: (due.git && !ok) || Boolean(state.runFailedAt) }, fetcher);
     } catch { /* 钉钉不通：过一阵再试 */ }
     if (pushed) {
       state.lastDing = now;
       state.dingCount = 0;
       state.dingFailedAt = 0;
+      state.runFailedAt = 0;
     } else {
       state.dingFailedAt = now;
     }
@@ -381,22 +396,70 @@ async function send(env, siteCfg, key, fp, state, now, fetcher, due) {
 /** 每小时：攒着没报的次数补报一条评论（满一小时的才报），上次没推成的钉钉再推。 */
 export async function flush(env, { now = Math.floor(Date.now() / 1000), fetcher = fetch } = {}) {
   const all = sites(env);
+  const runs = {};
   let cursor;
   do {
     const page = await env.ALERTS.list({ prefix: 'fp:', cursor });
     for (const { name } of page.keys) {
       const state = await readState(env, name);
       if (!state) continue;
-      const due = dueChannels(state, now);
-      if (!due.git && !due.ding) continue;
       const [, site, fp] = name.split(':');
       if (!all[site]) continue;
+      if (state.awaiting && now - state.awaiting.at >= CONFIRM_AFTER) {
+        if (!(site in runs)) runs[site] = await recentRuns(env, all[site], now, fetcher);
+        if (settleRun(state, fp, runs[site], now)) await writeState(env, name, state);
+      }
+      const due = dueChannels(state, now);
+      if (!due.git && !due.ding) continue;
       // 当天新开的已到上限：等第二天。
       if (!state.lastSent && !(await reserve(env, site, state, now))) continue;
       await send(env, all[site], name, fp, state, now, fetcher, due);
     }
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
+}
+
+/** 站点仓库最近两天的报警流程运行（标题是「表单报警 <指纹>」）；查不到返回 null，这次先不核对。 */
+async function recentRuns(env, siteCfg, now, fetcher) {
+  const since = new Date((now - 2 * 24 * HOUR) * 1000).toISOString().slice(0, 19) + 'Z';
+  try {
+    return await withDeadline(outboundMs(env), async (signal) => {
+      const response = await fetcher(`https://api.github.com/repos/${siteCfg.repo}/actions/workflows/form-alert.yml/runs?event=workflow_dispatch&per_page=100&created=${encodeURIComponent('>=' + since)}`, {
+        headers: { Authorization: `Bearer ${env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'achord-form-alert' },
+        signal,
+      });
+      if (response.status !== 200) return null;
+      const data = await response.json();
+      return Array.isArray(data?.workflow_runs) ? data.workflow_runs : null;
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 核对上次触发的流程：跑成了就放下；跑失败了、或过了 30 分钟还查不到这次运行，就把次数退回待发、恢复上次的发送时间，
+ * 这次补报马上重发，钉钉也会写明 Issue 没开成。状态有变化返回 true。
+ */
+function settleRun(state, fp, runs, now) {
+  const awaiting = state.awaiting;
+  if (!awaiting || !runs) return false;
+  const run = runs
+    .filter((r) => r.display_title === RUN_TITLE(fp) && Date.parse(r.created_at) / 1000 >= awaiting.at - 120)
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+  if (run && run.status !== 'completed') return false;
+  if (run && run.conclusion === 'success') {
+    delete state.awaiting;
+    return true;
+  }
+  if (!run && now - awaiting.at < CONFIRM_GIVE_UP) return false;
+  state.pending += awaiting.count;
+  state.lastSent = awaiting.prevLastSent || 0;
+  state.gitFailedAt = 0;
+  state.runFailedAt = now;
+  state.dingCount = (state.dingCount || 0) + 1;
+  delete state.awaiting;
+  return true;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

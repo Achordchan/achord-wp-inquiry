@@ -603,6 +603,10 @@ $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_secret'] = 'short';
 achord_inquiry_enqueue_alert_script();
 $inline = (string) ($GLOBALS['inline']['achord-form-alert'] ?? '');
 check($GLOBALS['enqueued'] && str_contains($inline, '"endpoint":"https:\/\/alert.example.com\/report"') && str_contains($inline, 'boblift_inquiry_submit=1') && str_contains($inline, '"site":"example.com"'), '填了地址：每页加载报警脚本，盯询盘和目录提交');
+ob_start();
+achord_inquiry_print_alert_early();
+$early = (string) ob_get_clean();
+check(str_contains($early, 'achordFormAlertEarly') && str_contains($early, 'challenges.cloudflare.com'), '页头最前面放验证码失败记录器');
 check(achord_inquiry_alert_secret() === '', '密钥太短不算');
 check(achord_inquiry_alert_redact('Mail ana@client.test or call +1 (555) 010-2030 now') === 'Mail [已隐去] or call [已隐去] now', '报警内容隐去邮箱和电话');
 
