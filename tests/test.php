@@ -5,6 +5,8 @@ define('ABSPATH', __DIR__);
 define('WEEK_IN_SECONDS', 604800);
 define('HOUR_IN_SECONDS', 3600);
 define('DAY_IN_SECONDS', 86400);
+define('ACHORD_INQUIRY_VERSION', '0.5.0');
+define('ACHORD_INQUIRY_FILE', dirname(__DIR__) . '/achord-wp-inquiry.php');
 
 $GLOBALS['options'] = [];
 $GLOBALS['filters'] = [];
@@ -83,8 +85,13 @@ function wp_remote_post($u, $a = []) {
         $GLOBALS['ai_requests'][] = ['url' => $u, 'args' => $a];
         return $GLOBALS['ai_reply'] ?? new WP_Error('timeout', 'timed out');
     }
+    $GLOBALS['posts_sent'][] = ['url' => $u, 'args' => $a];
     return ['code' => 200, 'body' => '{"success":true}'];
 }
+function wp_delete_post($id, $force = false) { $GLOBALS['deleted'][] = [$id, $force]; return true; }
+function plugins_url($p, $f) { return 'https://example.com/wp-content/plugins/achord-wp-inquiry/' . $p; }
+function wp_enqueue_script(...$a) { $GLOBALS['enqueued'][] = $a; }
+function wp_add_inline_script($h, $js, $pos = 'after') { $GLOBALS['inline'][$h] = $js; }
 function wp_remote_retrieve_body($r) { return $r['body']; }
 function wp_remote_retrieve_response_code($r) { return $r['code']; }
 function is_wp_error($v) { return $v instanceof WP_Error; }
@@ -99,7 +106,14 @@ function wp_insert_post($a, $e = false) { $a['post_title'] = stripslashes($a['po
 function update_post_meta($id, $k, $v) { $GLOBALS['meta'][$id][$k] = stripslashes((string) $v); return true; }
 function get_post_meta($id, $k = '', $single = false) { return $k === '' ? array_map(fn($v) => [$v], $GLOBALS['meta'][$id] ?? []) : ($GLOBALS['meta'][$id][$k] ?? ''); }
 function wp_cache_delete($k, $g = '') { $GLOBALS['cache_deletes'][] = [$k, $g]; return true; }
-function wp_mail($to, $subject, $body, $headers = []) { $GLOBALS['mails'][] = compact('to', 'subject', 'body', 'headers'); return true; }
+function wp_mail($to, $subject, $body, $headers = []) {
+    if (!empty($GLOBALS['mail_fails'])) {
+        do_action('wp_mail_failed', new WP_Error('wp_mail_failed', 'SMTP connect() failed for ops@example.com'));
+        return false;
+    }
+    $GLOBALS['mails'][] = compact('to', 'subject', 'body', 'headers');
+    return true;
+}
 function achord_dingtalk_dispatch($message, $source) { $GLOBALS['dingtalk'][] = [$message, $source]; }
 
 class FakeWpdb
@@ -149,6 +163,7 @@ require dirname(__DIR__) . '/includes/guard.php';
 require dirname(__DIR__) . '/includes/screen.php';
 require dirname(__DIR__) . '/includes/store.php';
 require dirname(__DIR__) . '/includes/notify.php';
+require dirname(__DIR__) . '/includes/alert.php';
 require dirname(__DIR__) . '/includes/submit.php';
 require dirname(__DIR__) . '/includes/settings.php';
 
@@ -575,6 +590,64 @@ check(achord_inquiry_sanitize_options(['ai_base_url' => 'http://insecure.test'])
 check(achord_inquiry_sanitize_options(['ai_timeout' => '999'])['ai_timeout'] === '60', '超时最多 60 秒');
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['ai_api_key'] = '';
 check(achord_inquiry_ai_config() === null, '没填密钥就不调 AI');
+
+// 表单报警（includes/alert.php）。
+achord_inquiry_alert_hooks();
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_url'] = '';
+$GLOBALS['enqueued'] = [];
+achord_inquiry_enqueue_alert_script();
+check(!$GLOBALS['enqueued'], '没填报警服务地址：不加载报警脚本');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_url'] = 'https://alert.example.com/';
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_secret'] = 'short';
+achord_inquiry_enqueue_alert_script();
+$inline = (string) ($GLOBALS['inline']['achord-form-alert'] ?? '');
+check($GLOBALS['enqueued'] && str_contains($inline, '"endpoint":"https:\/\/alert.example.com\/report"') && str_contains($inline, 'boblift_inquiry_submit=1') && str_contains($inline, '"site":"example.com"'), '填了地址：每页加载报警脚本，盯询盘和目录提交');
+check(achord_inquiry_alert_secret() === '', '密钥太短不算');
+check(achord_inquiry_alert_redact('Mail ana@client.test or call +1 (555) 010-2030 now') === 'Mail [已隐去] or call [已隐去] now', '报警内容隐去邮箱和电话');
+
+// 密钥太短：自检请求头不认，照常走人机验证等。
+$_SERVER['HTTP_X_ACHORD_MONITOR'] = 'short';
+check(!achord_inquiry_is_monitor(), '短密钥不能当自检');
+$secret = str_repeat('k', 32);
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['alert_secret'] = $secret;
+$_SERVER['HTTP_X_ACHORD_MONITOR'] = 'wrong-' . $secret;
+check(!achord_inquiry_is_monitor(), '密钥不对不算自检');
+
+// 自检：照常校验随机数、保存后立刻删除，不发邮件钉钉、不排后台任务，答复带配置状态。
+$_SERVER['HTTP_X_ACHORD_MONITOR'] = $secret;
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_enabled'] = '1';
+$GLOBALS['mails'] = [];
+$GLOBALS['dingtalk'] = [];
+$GLOBALS['scheduled'] = [];
+$GLOBALS['deleted'] = [];
+$r = submit(['boblift_inquiry_nonce' => 'bad', 'email' => 'monitor@example.com', 'message' => 'self-check']);
+check(!$r->success && $r->status === 403 && ($r->data['code'] ?? '') === 'invalidRequest', '自检也要随机数对');
+$r = submit(['name' => 'Self-check', 'email' => 'monitor@example.com', 'message' => 'self-check']);
+$deleted = end($GLOBALS['deleted']);
+check($r->success && ($r->data['monitor'] ?? false) === true && $deleted && $deleted[1] === true, '自检：存下后彻底删除');
+check(!$GLOBALS['mails'] && !$GLOBALS['dingtalk'] && !$GLOBALS['scheduled'], '自检：不发邮件、不推钉钉、不排后台判断');
+check(($r->data['health']['recipient_ok'] ?? null) === true && array_key_exists('mail_fail_at', $r->data['health']), '自检答复带收件人和发信状态');
+unset($_SERVER['HTTP_X_ACHORD_MONITOR']);
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_enabled'] = '0';
+
+// 访客的失败答复带 code，报警脚本据此区分访客漏填和真故障。
+$r = submit(['email' => 'a@b.test', 'message' => '']);
+check(($r->data['code'] ?? '') === 'requiredFields', '失败答复带 code');
+
+// 通知邮件发不出去：记下失败时间和原因（隐去邮箱），并报给报警服务（带密钥、只带询盘编号）。
+$GLOBALS['wpdb']->rows = [];
+$GLOBALS['posts_sent'] = [];
+$GLOBALS['mail_fails'] = true;
+$r = submit(['name' => 'Bob', 'email' => 'bob@client.test', 'product' => 'SQ5 Crane', 'message' => 'Need a crane for my truck']);
+$GLOBALS['mail_fails'] = false;
+$health = get_option(ACHORD_INQUIRY_MAIL_HEALTH);
+check(($health['fail_at'] ?? 0) > 0 && str_contains($health['fail_reason'] ?? '', 'SMTP connect() failed') && !str_contains($health['fail_reason'] ?? '', 'ops@example.com'), '记下发信失败和原因，隐去邮箱');
+$alerts = array_values(array_filter($GLOBALS['posts_sent'], fn($p) => str_ends_with($p['url'], '/server')));
+$alert = $alerts ? json_decode($alerts[0]['args']['body'], true) : [];
+check(count($alerts) === 1 && $alerts[0]['url'] === 'https://alert.example.com/server' && $alerts[0]['args']['headers']['Authorization'] === 'Bearer ' . $secret && $alerts[0]['args']['blocking'] === false, '发信失败报给报警服务，带密钥、不等答复');
+check(($alert['kind'] ?? '') === 'mail_failed' && ($alert['inquiry'] ?? 0) === $r->data['id'] && !str_contains($alerts[0]['args']['body'], 'bob@client.test') && !str_contains($alerts[0]['args']['body'], 'Need a crane'), '报警只带询盘编号和原因，不带客户资料');
+$r = submit(['name' => 'Cy', 'email' => 'cy@client.test', 'product' => 'SQ5 Crane', 'message' => 'Need a crane']);
+check((get_option(ACHORD_INQUIRY_MAIL_HEALTH)['ok_at'] ?? 0) > 0, '发成功也记下时间');
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);

@@ -80,6 +80,9 @@ function achord_inquiry_options(): array
         'ai_api_key' => '',
         'ai_model' => '',
         'ai_timeout' => '30',
+        // 表单报警（includes/alert.php）：报警服务地址和密钥，都填才启用。
+        'alert_url' => '',
+        'alert_secret' => '',
     ];
     $defaults = array_merge($defaults, array_intersect_key((array) apply_filters('achord_inquiry_default_options', $defaults), $defaults));
     $saved = get_option(ACHORD_INQUIRY_OPTION, null);

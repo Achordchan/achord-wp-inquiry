@@ -9,6 +9,8 @@ BOB-LIFT 各站共用的询盘后台。表单长什么样由主题决定，提�
 - 通知：经典卡片邮件（来源渠道、设备、国家、语言、时间、IP 两行六格，广告原始参数放底部），装了 achord-wp-dingtalk 时推钉钉
 - 设置：后台「设置 → 询盘设置」，也可经 `/wp/v2/settings` 的 `achord_inquiry_options` 读写
 
+- 报警：询盘发不出去时报给报警服务（`monitor/worker.js`，跑在 Cloudflare），由它合并同类错误后开 GitHub Issue、推钉钉，每天新加坡 09:00 自检一次。见下面「表单报警」
+
 ## 主题怎么接
 
 在主题 `functions.php` 里声明（不声明插件就什么都不做，所以可以先装插件再部署主题）：
@@ -71,10 +73,23 @@ document.dispatchEvent(new Event('achord-inquiry:consent')); // 访客改了选�
 
 动作：`achord_inquiry_before_handle`（多语种主题切语言）、`achord_inquiry_before_mail`、`achord_inquiry_submitted`（询盘已存、已发邮件）。
 
+## 表单报警
+
+设置 → 询盘设置 →「表单报警」填报警服务地址和报警密钥（至少 24 个字符，和报警服务里给本站设的一样）后启用：
+
+- 浏览器：`assets/form-alert.js` 每页加载（主题去掉的是 `achord-inquiry`，不影响它）。平时只在本页内存记最近 25 步操作（点了什么、填过哪些字段名，不记填的内容）。盯着提交地址带 `{prefix}inquiry_submit=1`、`{prefix}catalog_request=1` 的 POST（过滤器 `achord_inquiry_alert_watch` 可加），断网、5xx、403、返回不是 JSON、保存失败、验证码脚本加载失败、点了提交后脚本报错卡住、不用脚本的表单回到原页带 `?inquiry=error` 时上报。访客漏填不报；人机验证没过、被限流照报，报警服务一小时内凑满 3 位不同访客才开 Issue。主题也可以 `window.achordFormAlert.report(kind, detail)`。
+- 服务器：询盘存不进去（`save_failed`）、通知邮件发不出去（`mail_failed`）时报给 `/server`，只带询盘编号和原因。
+- 自检：报警服务每天带请求头 `X-Achord-Monitor: <报警密钥>` 按访客流程提交一条测试询盘（照常校验随机数、照常保存），插件认出后跳过人机验证、限流和黑名单，存下立刻删除，不发邮件、不推钉钉、不计转化，答复里带收件人、人机验证、钉钉、最近发信成败、最近一条询盘时间。
+- 失败答复带 `code`（`requiredFields`、`verificationRequired`、`tooMany`、`saveFailed`、`invalidRequest`），报警脚本据此区分访客漏填和真故障。
+
+报警服务的部署见 `monitor/wrangler.example.toml`；站点仓库要放一份 `monitor/form-alert.yml`（`.github/workflows/form-alert.yml`），报警服务用它开 Issue。
+
 ## 测试
 
 ```
 php tests/test.php
 node --check assets/inquiry.js
 node tests/inquiry.test.js
+node tests/form-alert.test.js
+node tests/worker.test.mjs
 ```

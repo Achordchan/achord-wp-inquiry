@@ -25,6 +25,7 @@ function achord_inquiry_boot(): void
     add_action('wp_enqueue_scripts', 'achord_inquiry_enqueue_script');
     add_action('achord_inquiry_unscreened', 'achord_inquiry_screen_saved');
     add_action('achord_inquiry_screen_now', 'achord_inquiry_screen_saved', 10, 2);
+    achord_inquiry_alert_hooks();
     do_action('achord_inquiry_booted');
 }
 
@@ -92,7 +93,8 @@ function achord_inquiry_fail(string $message_key, string $status = 'missing', in
 {
     $message = achord_inquiry_message($message_key);
     if (achord_inquiry_wants_json()) {
-        wp_send_json_error(['message' => $message], $code);
+        // code tells the alert script (assets/form-alert.js) a visitor's own slip from a fault.
+        wp_send_json_error(['message' => $message, 'code' => $message_key], $code);
     }
     $back = wp_get_referer() ?: ((string) achord_inquiry_config()['fallback_url'] ?: home_url('/'));
     wp_safe_redirect(add_query_arg('inquiry', $status, $back));
@@ -140,7 +142,7 @@ function achord_inquiry_handle(): void
     $nonce = sanitize_text_field((string) wp_unslash($_POST[achord_inquiry_name('inquiry_nonce')] ?? ''));
     if ($nonce === '' || !wp_verify_nonce($nonce, achord_inquiry_name('submit_inquiry'))) {
         if (achord_inquiry_wants_json()) {
-            wp_send_json_error(['message' => achord_inquiry_message('invalidRequest')], 403);
+            wp_send_json_error(['message' => achord_inquiry_message('invalidRequest'), 'code' => 'invalidRequest'], 403);
         }
         wp_die(esc_html(achord_inquiry_message('invalidRequest')), '', ['response' => 403]);
     }
@@ -161,6 +163,11 @@ function achord_inquiry_handle(): void
     if (!is_email((string) ($fields['email'] ?? ''))) {
         achord_inquiry_fail('requiredFields');
     }
+    // The daily self-check (includes/alert.php): saved and deleted at once, no notifications; it skips only the
+    // human check, the rate limit and the blocklist.
+    if (achord_inquiry_is_monitor()) {
+        achord_inquiry_monitor_answer($fields);
+    }
     if (!achord_inquiry_verify_turnstile()) {
         achord_inquiry_fail('verificationRequired', 'verification');
     }
@@ -173,6 +180,7 @@ function achord_inquiry_handle(): void
     if ($block_reason !== '') {
         $post_id = achord_inquiry_save($fields, $block_reason);
         if (is_wp_error($post_id)) {
+            achord_inquiry_alert('save_failed', $post_id->get_error_message(), ['form' => (string) ($fields['lead_type'] ?? '')]);
             achord_inquiry_fail('saveFailed', 'error', 500);
         }
         achord_inquiry_succeed(0);
@@ -181,6 +189,7 @@ function achord_inquiry_handle(): void
     // email and DingTalk run after that, in the background (achord_inquiry_screen_saved()). Only the notifications wait.
     $post_id = achord_inquiry_save($fields);
     if (is_wp_error($post_id)) {
+        achord_inquiry_alert('save_failed', $post_id->get_error_message(), ['form' => (string) ($fields['lead_type'] ?? '')]);
         achord_inquiry_fail('saveFailed', 'error', 500);
     }
     $post_id = (int) $post_id;

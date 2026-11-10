@@ -1,6 +1,7 @@
 <?php
 /**
- * 设置 → 询盘设置: where notifications go, Cloudflare Turnstile, the blocklist and whether inquiries keep the IP.
+ * 设置 → 询盘设置: where notifications go, Cloudflare Turnstile, the blocklist, whether inquiries keep the IP and the
+ * form alert service (includes/alert.php).
  * Registered with show_in_rest, so administrators can also read and change it at /wp/v2/settings (achord_inquiry_options).
  */
 
@@ -21,7 +22,7 @@ function achord_inquiry_sanitize_options($value): array
             'recipient' => is_email(sanitize_email($given)) ? sanitize_email($given) : '',
             'blocklist' => sanitize_textarea_field($given),
             'ai_timeout' => (string) max(5, min(60, (int) $given ?: 30)),
-            'ai_base_url' => preg_match('#^https://#i', trim($given)) ? esc_url_raw(trim($given)) : '',
+            'ai_base_url', 'alert_url' => preg_match('#^https://#i', trim($given)) ? esc_url_raw(trim($given)) : '',
             default => sanitize_text_field($given),
         };
     }
@@ -38,7 +39,7 @@ add_action('init', static function (): void {
     }
     register_setting('achord_inquiry', ACHORD_INQUIRY_OPTION, [
         'type' => 'object',
-        'description' => '询盘设置：收件邮箱、Turnstile、黑名单、是否保存 IP、自动标记疑似垃圾、AI 判断',
+        'description' => '询盘设置：收件邮箱、Turnstile、黑名单、是否保存 IP、自动标记疑似垃圾、AI 判断、表单报警',
         'default' => [],
         'sanitize_callback' => 'achord_inquiry_sanitize_options',
         'show_in_rest' => ['schema' => ['type' => 'object', 'properties' => $properties]],
@@ -87,6 +88,11 @@ function achord_inquiry_settings_page(): void
     echo '<p><input class="small-text" type="number" min="5" max="60" name="' . $name('ai_timeout') . '" value="' . esc_attr($options['ai_timeout']) . '"> 秒内没答复就改用规则（默认 30 秒）。访客不用等：询盘存好就显示提交成功，判断在后台跑，只是邮件和钉钉晚这么几十秒到；后台中途断开也不会丢，3 分钟后补发。</p>';
     echo '<p><input class="regular-text" type="text" name="' . $name('ai_model') . '" value="' . esc_attr($options['ai_model']) . '" placeholder="模型，例如 gpt-4o-mini"></p>';
     echo '<p class="description">三项都填（OpenAI 兼容的 /chat/completions 接口，只认 https）才启用。每条询盘先由服务器查 IP 归属、邮箱域名官网和注册日期、来源渠道，再交给 AI 判断：垃圾询盘钉钉只推「拦截一条垃圾询盘，原因 …」，邮件照发但标题加【AI 拦截】、正文写明原因，标无效、不算转化（误判点「恢复有效」）；正常询盘在邮件和钉钉里带 1–5 星优质度和一句背调。AI 出错或超时时改用上面的规则。不填就不调用 AI。填好保存后用下面的「测试连接」检查。</p></td></tr>';
+
+    echo '<tr><th scope="row">表单报警</th><td>';
+    echo '<p><input class="regular-text" type="url" name="' . $name('alert_url') . '" value="' . esc_attr($options['alert_url']) . '" placeholder="报警服务地址，例如 https://form-alert.example.com"></p>';
+    echo '<p><input class="regular-text" type="password" autocomplete="new-password" name="' . $name('alert_secret') . '" value="' . esc_attr($options['alert_secret']) . '" placeholder="报警密钥（至少 24 个字符）"></p>';
+    echo '<p class="description">两项都填才启用。访客提交失败（断网、服务器出错、验证码加载不出来等）时，浏览器把错误和失败前几步操作（只记点了什么、填过哪些字段名，不记填的内容）发给报警服务；询盘存不进去、通知邮件发不出去时，本站服务器也会报。报警服务合并同类错误后开 GitHub Issue、推钉钉。报警服务每天还会带这个密钥提交一条测试询盘：照常保存后立刻删除，不发邮件、不推钉钉、不算转化。密钥和报警服务里给本站设的必须一样。</p></td></tr>';
 
     echo '<tr><th scope="row">保存 IP</th><td>';
     $checkbox('store_ip', '询盘保存访客 IP');
