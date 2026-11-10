@@ -177,7 +177,7 @@ async function dispatchIssue(env, siteCfg, payload, fetcher) {
       'User-Agent': 'achord-form-alert',
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ ref: siteCfg.branch || 'main', inputs: { payload: JSON.stringify(payload).slice(0, 60000) } }),
+    body: JSON.stringify({ ref: siteCfg.branch || 'main', inputs: { fp: payload.fp, payload: JSON.stringify(payload).slice(0, 60000) } }),
   });
   return response.status === 204;
 }

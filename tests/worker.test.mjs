@@ -40,6 +40,7 @@ let net = fakeNet();
 check(await intake(env, event, { now: T0, fetcher: net.fetcher }) === 'sent', '第一次出现：触发开 Issue');
 const gh = ghCalls(net.calls)[0];
 const payload = JSON.parse(JSON.parse(gh.init.body).inputs.payload);
+check(JSON.parse(gh.init.body).inputs.fp === payload.fp, '指纹单独作为一个输入传给流程（按指纹排队）');
 check(gh.url === 'https://api.github.com/repos/Achordchan/bobliftcrane/actions/workflows/form-alert.yml/dispatches' && gh.init.headers.Authorization === 'Bearer gh', '调用起重机站仓库的 form-alert 流程');
 check(payload.title === '[起重机站] 询盘表单服务器出错：HTTP 502' && payload.body.includes('Safari 17 / iOS 17.4') && payload.body.includes('https://bobliftcrane.com/products/sq5/') && payload.body.includes('点击 button「Get a quote」') && /^[0-9a-f]{12}$/.test(payload.fp), 'Issue 标题、浏览器、页面、足迹齐全');
 const ding = dingCalls(net.calls)[0];
