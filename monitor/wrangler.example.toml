@@ -1,0 +1,65 @@
+# 表单报警服务的部署配置样板。复制成 wrangler.toml 后 `npx wrangler deploy`（免费版即可，Durable Object 用 SQLite 存储）。
+# 密钥不写在这里，用 `npx wrangler secret put <名字>` 设：
+#   GITHUB_TOKEN      细粒度令牌，只授权两个站点仓库的 Actions: Read and write
+#   SITE_SECRETS      {"bobliftcrane.com":"<起重机站报警密钥>","bobliftloader.com":"<装载站报警密钥>"}（和各站「询盘设置」里填的一样）
+#   DINGTALK_WEBHOOK  现在推询盘的那个钉钉群机器人的 Webhook 地址
+#   DINGTALK_SECRET   机器人开了「加签」才要
+name = "achord-form-alert"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+
+routes = [{ pattern = "form-alert.achord.cn", custom_domain = true }]
+
+# 计数和状态放在一个 Durable Object 里，所有报警排队逐条处理，故障爆发时不会重复开 Issue、不丢计数。
+[[durable_objects.bindings]]
+name = "DESK"
+class_name = "AlertDesk"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AlertDesk"]
+
+# 每小时一次：补报攒下的次数；UTC 01 点（新加坡 09 点）那次做每日自检。
+[triggers]
+crons = ["7 * * * *"]
+
+[vars]
+SITES = '''
+{
+  "bobliftcrane.com": {
+    "label": "起重机站",
+    "repo": "Achordchan/bobliftcrane",
+    "base": "https://bobliftcrane.com",
+    "origins": ["https://bobliftcrane.com", "https://www.bobliftcrane.com"],
+    "quiet_hours": 0,
+    "check": {
+      "page": "https://bobliftcrane.com/contact.html",
+      "marker": "boblift_inquiry_submit=1",
+      "nonce_url": "https://bobliftcrane.com/?boblift_fresh_nonce=inquiry",
+      "nonce_field": "boblift_inquiry_nonce",
+      "action": "boblift_submit_inquiry",
+      "response_field": "boblift_inquiry_response",
+      "submit": "https://bobliftcrane.com/?boblift_inquiry_submit=1",
+      "fields": { "name": "Form self-check", "email": "form-selfcheck@bobliftcrane.com", "message": "Daily form self-check. Saved and deleted automatically.", "source_entry": "每日自检" }
+    }
+  },
+  "bobliftloader.com": {
+    "label": "装载站",
+    "repo": "Achordchan/bobliftloader",
+    "base": "https://bobliftloader.com",
+    "origins": ["https://bobliftloader.com", "https://www.bobliftloader.com"],
+    "quiet_hours": 0,
+    "check": {
+      "page": "https://bobliftloader.com/contact/",
+      "marker": "bl_inquiry_submit=1",
+      "nonce_url": "https://bobliftloader.com/wp-admin/admin-ajax.php?action=bl_inquiry_nonce",
+      "nonce_field": "bl_inquiry_nonce",
+      "action": "bl_submit_inquiry",
+      "response_field": "bl_inquiry_response",
+      "submit": "https://bobliftloader.com/?bl_inquiry_submit=1",
+      "fields": { "name": "Form self-check", "email": "form-selfcheck@bobliftloader.com", "message": "Daily form self-check. Saved and deleted automatically.", "source_entry": "每日自检" }
+    }
+  }
+}
+'''

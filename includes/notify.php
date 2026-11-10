@@ -210,10 +210,13 @@ function achord_inquiry_send_mail(array $fields, int $post_id): bool
     do_action('achord_inquiry_before_mail', $fields, $post_id);
     [$subject, $body] = achord_inquiry_admin_mail($fields, $post_id);
     $reply_to = 'Reply-To: ' . str_replace(["\r", "\n"], '', (string) ($fields['email'] ?? ''));
+    achord_inquiry_last_mail_error('');
     $sent = (bool) wp_mail(achord_inquiry_recipient(), $subject, $body, ['Content-Type: text/html; charset=UTF-8', achord_inquiry_mail_from_header(), $reply_to]);
     if ($post_id > 0) {
         update_post_meta($post_id, '_mail_sent', $sent ? '1' : '0');
     }
+    // Kept for the daily self-check; a failure is reported at once (includes/alert.php).
+    achord_inquiry_mail_result($sent, $post_id, (string) ($fields['lead_type'] ?? ''));
     return $sent;
 }
 

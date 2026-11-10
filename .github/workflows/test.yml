@@ -21,4 +21,9 @@ jobs:
       - name: Unit tests
         run: php tests/test.php
       - name: Script syntax
-        run: node --check assets/inquiry.js && node tests/inquiry.test.js
+        run: node --check assets/inquiry.js && node tests/inquiry.test.js && node --check assets/form-alert.js && node tests/form-alert.test.js
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Alert service
+        run: node tests/worker.test.mjs
