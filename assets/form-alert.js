@@ -9,7 +9,7 @@
  * - 没离开页面、请求却被中断（主题自己等太久超时）：报 aborted；访客跳走或关页时的中断不报。
  * - 不用脚本的表单失败时会回到原页带 ?inquiry=error|verification，打开页面时报。
  * - 验证码脚本（challenges.cloudflare.com）加载不出来也报。
- * - 点了提交、脚本报错、之后一直没发出请求：报「卡住」。
+ * - 点了提交、脚本报错、之后一直没发出请求：报「卡住」。提交时还有漏填或格式不对的字段（访客被拦在本页）不算。
  * 主题也可以自己报：window.achordFormAlert.report(kind, detail)。
  */
 (() => {
@@ -194,6 +194,14 @@
     // 只记路径：表单地址里的查询参数（gclid 之类的广告点击编号、令牌）不带走。
     step(`提交表单 ${action ? redact(action.replace(/^https?:\/\/[^/]+/, '').split(/[?#]/)[0], 60) : ''}`);
     if (!watched(action)) return;
+    // 有漏填或格式不对的字段（比如邮箱是空的）：主题和浏览器会把访客拦在本页、不发请求，这是访客自己的事，不算卡住。
+    // 表单带 novalidate 时浏览器不拦，但 checkValidity 照样按 required/type 判断，和主题自己的校验一致。
+    try {
+      if (typeof form.checkValidity === 'function' && !form.checkValidity()) {
+        step('有漏填或格式不对的字段，没发出（访客自己漏填，不算故障）');
+        return;
+      }
+    } catch { /* 判断不了就照旧盯着 */ }
     const at = Date.now();
     lastSubmitAt = at;
     // 点了提交，之后脚本报错、一直没发出请求：表单卡住了。只是访客漏填（没报错）不算。
@@ -216,7 +224,7 @@
     }
     lastErrorAt = Date.now();
     const file = String(event.filename || '').split('/').pop().split('?')[0];
-    step(`脚本报错：${event.message || ''}${file ? ' @' + file + ':' + (event.lineno || 0) : ''}`);
+    step(`脚本报错：${event.message || '（没有错误信息）'}${file ? ' @' + file + ':' + (event.lineno || 0) : ''}`);
   }, true);
   // 报警脚本运行之前就失败了的验证码脚本（页头记录器记下的）：补报。
   const early = Array.isArray(window.achordFormAlertEarly) ? window.achordFormAlertEarly : [];
@@ -226,7 +234,8 @@
   }
   window.addEventListener('unhandledrejection', (event) => {
     lastErrorAt = Date.now();
-    step(`脚本报错：${String(event.reason?.message || event.reason || '').slice(0, 100)}`);
+    // 未处理的 Promise 失败：原因常常是空的（第三方脚本 reject() 不带参数），写明来源，免得报告里只剩「脚本报错：」。
+    step(`脚本报错（未处理的 Promise）：${String(event.reason?.message || event.reason || '').slice(0, 100) || '（没有错误信息）'}`);
   });
 
   step(`打开 ${location.pathname}`);

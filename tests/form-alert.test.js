@@ -10,6 +10,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 function run({ search = '', reply, offline = false, early } = {}) {
   const beacons = [];
+  const timers = [];
   const listeners = {};
   const winListeners = {};
   class Element {
@@ -29,7 +30,7 @@ function run({ search = '', reply, offline = false, early } = {}) {
     achordFormAlertConfig: { endpoint: 'https://alert.test/report', site: 'site.test', watch: ['boblift_inquiry_submit=1', 'boblift_catalog_request=1'] },
     fetch: fakeFetch,
     innerWidth: 390,
-    setTimeout: () => 0,
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
     addEventListener: (type, fn) => { winListeners[type] = fn; },
   };
   const context = {
@@ -41,7 +42,7 @@ function run({ search = '', reply, offline = false, early } = {}) {
     URLSearchParams, JSON, Date, Object, String, Array, Number, Set, WeakMap, Math, Promise,
   };
   vm.runInNewContext(source, context);
-  return { window, beacons, listeners, winListeners, Element, HTMLFormElement, navigator: context.navigator };
+  return { window, beacons, listeners, winListeners, timers, Element, HTMLFormElement, navigator: context.navigator };
 }
 
 const response = (status, body) => ({ status, clone: () => ({ text: () => Promise.resolve(body) }) });
@@ -172,6 +173,26 @@ const response = (status, body) => ({ status, clone: () => ({ text: () => Promis
   check(r.beacons[0]?.body.kind === 'turnstile_load', '验证码脚本加载失败：上报');
   r = run({ early: ['https://challenges.cloudflare.com/turnstile/v0/api.js'] });
   check(r.beacons[0]?.body.kind === 'turnstile_load', '验证码脚本在报警脚本之前就失败了（页头记录器记下）：补报');
+
+  // 点了提交、脚本报错、一直没发出请求：报「卡住」；空的 Promise 失败也写明来源。
+  r = run();
+  const stuckForm = new r.HTMLFormElement({ tagName: 'FORM', attrs: { action: '/?boblift_inquiry_submit=1' }, checkValidity: () => true });
+  r.listeners.submit({ target: stuckForm });
+  r.winListeners.unhandledrejection({ reason: undefined });
+  r.timers.forEach((fn) => fn());
+  b = r.beacons[0]?.body || {};
+  check(r.beacons.length === 1 && b.kind === 'stuck' && String(b.detail).includes('未处理的 Promise') && String(b.detail).includes('没有错误信息'), '字段都填对了、提交后脚本报错没发请求：报 stuck，空原因写明「没有错误信息」');
+
+  // 2026-11-13 起重机站误报：邮箱空着点了提交（主题拦下、聚焦邮箱），几秒后别的脚本报了个空错误 —— 不算卡住。
+  r = run();
+  const emptyForm = new r.HTMLFormElement({ tagName: 'FORM', attrs: { action: '/?boblift_inquiry_submit=1' }, checkValidity: () => false });
+  r.listeners.click({ target: new r.Element({ textContent: 'Send Inquiry', dataset: { inquiryModalSubmit: '' } }) });
+  r.listeners.submit({ target: emptyForm });
+  r.listeners.focusin({ target: new r.Element({ tagName: 'INPUT', form: emptyForm, attrs: { name: 'email' } }) });
+  r.winListeners.unhandledrejection({ reason: undefined });
+  r.timers.forEach((fn) => fn());
+  check(r.beacons.length === 0 && r.timers.length === 0, '有漏填（邮箱空着）点提交、之后有无关脚本报错：不报 stuck');
+  check(r.window.achordFormAlert._steps().some((s) => s.includes('漏填')), '足迹记下「有漏填，没发出」');
 
   // 隐去邮箱电话。
   check(r.window.achordFormAlert._redact('call +86 158 5249 9415 or a@b.co') === 'call [已隐去] or [已隐去]', '隐去电话和邮箱');
