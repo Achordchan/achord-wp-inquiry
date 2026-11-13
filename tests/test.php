@@ -5,7 +5,7 @@ define('ABSPATH', __DIR__);
 define('WEEK_IN_SECONDS', 604800);
 define('HOUR_IN_SECONDS', 3600);
 define('DAY_IN_SECONDS', 86400);
-define('ACHORD_INQUIRY_VERSION', '0.5.0');
+define('ACHORD_INQUIRY_VERSION', '0.5.1');
 define('ACHORD_INQUIRY_FILE', dirname(__DIR__) . '/achord-wp-inquiry.php');
 
 $GLOBALS['options'] = [];
