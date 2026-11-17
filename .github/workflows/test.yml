@@ -5,9 +5,10 @@ on:
   push:
     branches: [main]
 
-# A new push to a pull request cancels that pull request's run still in progress; runs on main always finish.
+# A new push to a pull request cancels that pull request's run still in progress. Every other run (pushes to main) gets a
+# group of its own: GitHub keeps only one pending run per group, so a shared group could still drop a main run.
 concurrency:
-  group: test-${{ github.event.pull_request.number || github.ref }}
+  group: test-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
