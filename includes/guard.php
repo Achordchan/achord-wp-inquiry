@@ -49,41 +49,89 @@ function achord_inquiry_turnstile_widget(string $class = '', bool $lazy = false)
 
 function achord_inquiry_verify_turnstile(): bool
 {
+    achord_inquiry_unchecked_reason('');
     if (!achord_inquiry_turnstile_enabled()) {
         return true;
     }
     $token = isset($_POST['cf-turnstile-response']) ? sanitize_text_field((string) wp_unslash($_POST['cf-turnstile-response'])) : '';
     if ($token === '') {
-        return false;
+        // The form's script found that Cloudflare's script would not load in this browser (an in-app browser, a network
+        // that blocks challenges.cloudflare.com), so there was no box to tick.
+        $said = trim((string) wp_unslash($_POST[achord_inquiry_name('turnstile_unavailable')] ?? ''));
+        return $said !== '' && achord_inquiry_let_unchecked('访客的浏览器加载不出 Cloudflare 验证码');
     }
     $response = wp_remote_post('https://challenges.cloudflare.com/turnstile/v0/siteverify', [
         'timeout' => 8,
         'body' => ['secret' => achord_inquiry_turnstile_config()['secret_key'], 'response' => $token, 'remoteip' => achord_inquiry_client_ip()],
     ]);
-    if (is_wp_error($response)) {
-        return false;
+    // Cloudflare could not be asked (down, or unreachable from this server): the visitor did tick the box.
+    if (is_wp_error($response) || (int) wp_remote_retrieve_response_code($response) >= 500) {
+        return achord_inquiry_let_unchecked('本站连不上 Cloudflare 的验证码校验');
     }
     $body = json_decode((string) wp_remote_retrieve_body($response), true);
     return is_array($body) && !empty($body['success']);
+}
+
+/**
+ * How many inquiries may come in without the Cloudflare check: per IP address in an hour, and for the whole site in a day.
+ * A form's script can claim the check would not load, so the claim is allowed only this often; past it the box is required.
+ */
+const ACHORD_INQUIRY_UNCHECKED_IP_LIMIT = 3;
+const ACHORD_INQUIRY_UNCHECKED_SITE_LIMIT = 30;
+
+/**
+ * Let an inquiry in without the Cloudflare check, when 询盘设置 allows it and the limits above are not used up. The reason
+ * is kept for the request (achord_inquiry_unchecked_reason()), so the inquiry is saved and sent marked 未经人机验证; the
+ * blocklist, the rate limit and the spam screening still apply to it as to any other.
+ */
+function achord_inquiry_let_unchecked(string $reason): bool
+{
+    if ((string) achord_inquiry_options()['turnstile_fallback'] !== '1') {
+        return false;
+    }
+    if (!achord_inquiry_take_slot('unchecked_ip', achord_inquiry_client_ip(), ACHORD_INQUIRY_UNCHECKED_IP_LIMIT, HOUR_IN_SECONDS)
+        || !achord_inquiry_take_slot('unchecked_site', 'site', ACHORD_INQUIRY_UNCHECKED_SITE_LIMIT, DAY_IN_SECONDS)) {
+        return false;
+    }
+    achord_inquiry_unchecked_reason($reason);
+    return true;
+}
+
+/** Why this request's inquiry was let in without the Cloudflare check ('' when it was checked, or the check is off). */
+function achord_inquiry_unchecked_reason(?string $reason = null): string
+{
+    static $current = '';
+    if ($reason !== null) {
+        $current = $reason;
+    }
+    return $current;
 }
 
 /** How many inquiries one IP address may send in one fixed 10-minute window before the form asks it to wait. */
 const ACHORD_INQUIRY_RATE_LIMIT = 5;
 const ACHORD_INQUIRY_RATE_WINDOW = 600;
 
-/**
- * Take one of this IP's inquiry slots in the current window; false when they are all taken. The count lives in its own
- * options row per IP and window, raised by a single conditional UPDATE, so two requests can never both take the last
- * slot (transients are a read then a write). Rows of finished windows are removed as new ones are made.
- */
 function achord_inquiry_reserve_slot(): bool
 {
+    return achord_inquiry_take_slot('rate', achord_inquiry_client_ip(), ACHORD_INQUIRY_RATE_LIMIT, ACHORD_INQUIRY_RATE_WINDOW);
+}
+
+/**
+ * Take one of $limit slots that $key (an IP address, or 'site') has in the current fixed window of $seconds; false when they are all
+ * taken. The count lives in its own options row per kind, key and window, raised by a single conditional UPDATE, so two
+ * requests can never both take the last slot (transients are a read then a write). Rows of finished windows of the same
+ * kind are removed as new ones are made.
+ */
+function achord_inquiry_take_slot(string $kind, string $key, int $limit, int $seconds): bool
+{
     global $wpdb;
-    $window = intdiv(time(), ACHORD_INQUIRY_RATE_WINDOW);
-    $name = '_achord_inquiry_rate_' . md5(achord_inquiry_client_ip()) . '_' . $window;
+    $window = intdiv(time(), $seconds);
+    $prefix = '_achord_inquiry_' . $kind . '_';
+    $name = $prefix . md5($key) . '_' . $window;
     $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, '0', 'no')", $name));
-    $taken = (int) $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = option_value + 1 WHERE option_name = %s AND option_value + 0 < %d", $name, ACHORD_INQUIRY_RATE_LIMIT));
-    $wpdb->query($wpdb->prepare("DELETE FROM {$wpdb->options} WHERE option_name LIKE %s AND SUBSTRING_INDEX(option_name, '_', -1) + 0 < %d", $wpdb->esc_like('_achord_inquiry_rate_') . '%', $window - 1));
+    $taken = (int) $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = option_value + 1 WHERE option_name = %s AND option_value + 0 < %d", $name, $limit));
+    // Kinds are named so that none starts with another ('unchecked_ip', 'unchecked_site'): the LIKE is by prefix.
+    $wpdb->query($wpdb->prepare("DELETE FROM {$wpdb->options} WHERE option_name LIKE %s AND SUBSTRING_INDEX(option_name, '_', -1) + 0 < %d", $wpdb->esc_like($prefix) . '%', $window - 1));
     return $taken === 1;
 }
 

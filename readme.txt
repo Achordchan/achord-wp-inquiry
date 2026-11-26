@@ -3,12 +3,15 @@ Contributors: achord
 Requires at least: 6.2
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 0.5.1
+Stable tag: 0.6.0
 License: GPLv2 or later
 
 网站询盘的后台：接收、防垃圾、来源渠道、存储、通知邮件、钉钉。表单外观由主题负责。
 
 == Changelog ==
+
+= 0.6.0 =
+* 验证码加载不出来时询盘不再丢：主题的表单脚本发现 Cloudflare 验证码加载不出来（Facebook/Instagram 内置浏览器、拦了 challenges.cloudflare.com 的网络），带上 `{prefix}turnstile_unavailable` 照常提交；本站连不上 Cloudflare 校验时也一样。询盘照收、照发邮件和钉钉，标「未经人机验证」，黑名单、限流、垃圾筛查照常。同一 IP 每小时最多 3 条、全站每天最多 30 条，超过仍要验证码。询盘设置里可关（默认开）。
 
 = 0.5.1 =
 * 表单报警少报误报：点提交时还有漏填或格式不对的字段（比如邮箱空着，访客被拦在本页），之后页面上别的脚本报错，不再报「提交卡住」。
