@@ -162,6 +162,9 @@ function achord_inquiry_admin_mail(array $fields, int $post_id): array
     $host = esc_html((string) wp_parse_url(home_url(), PHP_URL_HOST));
     // The screening's verdict: stars and background note, or why it looks like spam.
     $screen_block = '';
+    // Let in without the Cloudflare check: the sales team is told, the inquiry itself is handled as usual.
+    $unchecked = trim((string) ($fields['unchecked'] ?? ''));
+    $unchecked_block = $unchecked !== '' ? '<tr><td style="padding:16px 36px 0;"><div style="padding:12px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;font-size:14px;line-height:1.6;color:#475569;">' . esc_html('🛡️ 未经人机验证：' . $unchecked . '，系统让这条照常提交了。黑名单、限流和垃圾筛查照常做过。') . '</div></td></tr>' : '';
     $screen_stars = (int) ($fields['screen_stars'] ?? 0);
     if (($fields['suspect'] ?? '') === '' && ($fields['screen_verdict'] ?? '') === 'spam') {
         // Blocked by the AI: the email still goes out (the original stays in the mailbox), marked; DingTalk only had the notice.
@@ -182,6 +185,7 @@ function achord_inquiry_admin_mail(array $fields, int $post_id): array
         . '<tr><td style="padding:30px 36px 0;"><div style="font-size:26px;line-height:1.3;font-weight:bold;color:#0b1f33;">' . esc_html($type['headline']) . '</div><div style="padding-top:10px;font-size:15px;line-height:1.7;color:#475569;">' . esc_html($type['intro']) . '</div></td></tr>'
         . '<tr><td style="padding:20px 36px 0;"><table width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;border-radius:4px;"><tr><td style="padding:14px 18px;"><div style="font-size:12px;color:#64748b;padding-bottom:6px;">来源页面 &nbsp;<span style="display:inline-block;padding:2px 8px;border-radius:2px;background:#e3ebfc;color:#215bdb;font-size:12px;font-weight:bold;">' . esc_html($kind) . '</span>' . ($entry !== '' ? ' &nbsp;<span style="font-size:12px;color:#475569;">入口：' . esc_html($entry) . '</span>' : '') . '</div><div style="font-size:14px;line-height:1.6;word-break:break-all;">' . $page_html . '</div></td></tr></table></td></tr>'
         . $screen_block
+        . $unchecked_block
         . $heading(esc_html($type['section'])) . '<tr><td style="padding:0 36px;">' . $product_html . '</td></tr>'
         . $heading('客户信息') . '<tr><td style="padding:0 36px;"><table width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #edf0f4;">' . implode('', $rows) . '</table></td></tr>'
         . $message_block
@@ -258,6 +262,9 @@ function achord_inquiry_dingtalk_message(int $post_id, array $fields): array
     $page_key = static fn(string $url): string => (string) preg_replace('#/(?=\?|$)#', '', (string) preg_replace('/#.*$/s', '', $url), 1);
     if ($landing !== '' && $page_key($landing) !== $page_key($source['url'])) {
         $meta[] = ['label' => '落地页', 'icon' => '🧭', 'value' => $landing, 'link' => true];
+    }
+    if (trim((string) ($fields['unchecked'] ?? '')) !== '') {
+        $meta[] = ['label' => '未经人机验证', 'icon' => '🛡️', 'value' => trim((string) $fields['unchecked']) . '，照常提交'];
     }
     if ($post_id > 0 && get_post_meta($post_id, '_mail_sent', true) === '0') {
         $meta[] = ['label' => '注意', 'icon' => '⚠️', 'value' => '通知邮件没有发出去，请到后台查看这条询盘'];

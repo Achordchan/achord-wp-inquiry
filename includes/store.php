@@ -271,6 +271,7 @@ function achord_inquiry_admin_labels(): array
         'device' => '访问设备',
         'language' => '页面语言',
         'ip' => 'IP 地址',
+        'unchecked' => '未经人机验证',
         'blocked' => '黑名单拦截',
         'invalid' => '已标无效',
         'screen_stars' => '询盘优质度（星）',
@@ -297,7 +298,7 @@ function achord_inquiry_meta_box(WP_Post $post): void
     echo '<p style="margin:0 0 12px;color:#646970">这是前台询盘表单生成的只读详情，不需要像文章一样编辑标题或正文。</p>';
     echo '<button type="button" class="button button-primary" style="margin:0 0 12px" onclick="navigator.clipboard && navigator.clipboard.writeText(this.dataset.copy);this.textContent=\'已复制客户信息\';" data-copy="' . esc_attr(implode("\n", $copy)) . '">复制客户信息</button>';
     echo '<table class="widefat striped"><tbody>';
-    $optional = ['blocked', 'invalid', 'lead_type', 'language', 'page_referrer', 'screen_stars', 'screen_summary', 'screen_reason', 'screened_by'];
+    $optional = ['unchecked', 'blocked', 'invalid', 'lead_type', 'language', 'page_referrer', 'screen_stars', 'screen_summary', 'screen_reason', 'screened_by'];
     foreach ($labels as $key => $label) {
         $value = (string) get_post_meta($post->ID, '_' . $key, true);
         // Ad attribution exists only for visitors who came from an ad and agreed to advertising cookies.

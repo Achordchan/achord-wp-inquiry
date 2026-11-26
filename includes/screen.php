@@ -126,6 +126,7 @@ function achord_inquiry_screen_facts(array $fields, string $ip, float $deadline 
         '来源页面' => trim((string) ($fields['source_title'] ?? '') . ' ' . (string) ($fields['source_page'] ?? '')),
         '入口' => (string) ($fields['source_entry'] ?? ''),
         '访问设备' => (string) ($fields['device'] ?? ''),
+        '人机验证' => trim((string) ($fields['unchecked'] ?? '')) !== '' ? '没做（' . trim((string) $fields['unchecked']) . '），本身不说明是垃圾' : '',
     ], 'strlen');
 }
 

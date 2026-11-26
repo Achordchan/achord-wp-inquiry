@@ -177,6 +177,10 @@ function achord_inquiry_handle(): void
     if (!achord_inquiry_verify_turnstile()) {
         achord_inquiry_fail('verificationRequired', 'verification');
     }
+    // Let in without the Cloudflare check (its script would not load there): saved and sent marked so.
+    if (achord_inquiry_unchecked_reason() !== '') {
+        $fields['unchecked'] = achord_inquiry_unchecked_reason();
+    }
     // The slot is taken before anything is saved, so parallel submissions cannot all slip under the limit.
     if (!achord_inquiry_reserve_slot()) {
         achord_inquiry_fail('tooMany', 'error', 429);

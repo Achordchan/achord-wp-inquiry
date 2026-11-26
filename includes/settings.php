@@ -18,7 +18,7 @@ function achord_inquiry_sanitize_options($value): array
         $given = array_key_exists($key, $value) ? $value[$key] : $old;
         $given = is_scalar($given) ? (string) $given : '';
         $clean[$key] = match ($key) {
-            'turnstile_enabled', 'turnstile_local_mode', 'store_ip', 'suspect_check' => in_array($given, ['1', 'true'], true) ? '1' : '0',
+            'turnstile_enabled', 'turnstile_local_mode', 'turnstile_fallback', 'store_ip', 'suspect_check' => in_array($given, ['1', 'true'], true) ? '1' : '0',
             'recipient' => is_email(sanitize_email($given)) ? sanitize_email($given) : '',
             'blocklist' => sanitize_textarea_field($given),
             'ai_timeout' => (string) max(5, min(60, (int) $given ?: 30)),
@@ -74,7 +74,9 @@ function achord_inquiry_settings_page(): void
     $checkbox('turnstile_local_mode', '本地测试模式（用 Cloudflare 的测试密钥，线上不要勾）');
     echo '<p><input class="regular-text" type="text" name="' . $name('turnstile_site_key') . '" value="' . esc_attr($options['turnstile_site_key']) . '" placeholder="Site Key"></p>';
     echo '<p><input class="regular-text" type="password" autocomplete="new-password" name="' . $name('turnstile_secret_key') . '" value="' . esc_attr($options['turnstile_secret_key']) . '" placeholder="Secret Key"></p>';
-    echo '<p class="description">在 Cloudflare 后台 Turnstile 里给本站域名建一个小组件，把两个密钥填进来再勾选启用。没填全时不会启用，表单照常提交。</p></td></tr>';
+    echo '<p class="description">在 Cloudflare 后台 Turnstile 里给本站域名建一个小组件，把两个密钥填进来再勾选启用。没填全时不会启用，表单照常提交。</p>';
+    $checkbox('turnstile_fallback', '验证码加载不出来时照收询盘');
+    echo '<p class="description">有的浏览器（比如 Facebook、Instagram 里点开的页面）或网络打不开 Cloudflare 的验证码，访客就交不了表单。勾上后，主题的表单脚本发现验证码加载不出来（或本站连不上 Cloudflare 校验）时照常提交：询盘照收、照发邮件和钉钉，标「未经人机验证」，黑名单、限流和垃圾筛查照常。为防有人冒用，同一 IP 每小时最多 ' . (int) ACHORD_INQUIRY_UNCHECKED_IP_LIMIT . ' 条、全站每天最多 ' . (int) ACHORD_INQUIRY_UNCHECKED_SITE_LIMIT . ' 条，超过就仍要验证码。</p></td></tr>';
 
     echo '<tr><th scope="row">询盘黑名单</th><td><textarea class="large-text code" rows="6" name="' . $name('blocklist') . '">' . esc_textarea($options['blocklist']) . '</textarea><p class="description">每行一个：邮箱（spam@example.com）、整个邮箱域名（@example.com）、IP（203.0.113.7）或 IP 段（203.0.113.0/24）。命中的询盘存成「已拦截」草稿，不发邮件、不推钉钉、不算广告转化，客户看到的仍是提交成功。</p></td></tr>';
 

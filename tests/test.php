@@ -5,7 +5,7 @@ define('ABSPATH', __DIR__);
 define('WEEK_IN_SECONDS', 604800);
 define('HOUR_IN_SECONDS', 3600);
 define('DAY_IN_SECONDS', 86400);
-define('ACHORD_INQUIRY_VERSION', '0.5.1');
+define('ACHORD_INQUIRY_VERSION', '0.6.0');
 define('ACHORD_INQUIRY_FILE', dirname(__DIR__) . '/achord-wp-inquiry.php');
 
 $GLOBALS['options'] = [];
@@ -87,6 +87,9 @@ function wp_remote_post($u, $a = []) {
         return $GLOBALS['ai_reply'] ?? new WP_Error('timeout', 'timed out');
     }
     $GLOBALS['posts_sent'][] = ['url' => $u, 'args' => $a];
+    if (str_contains($u, 'siteverify') && isset($GLOBALS['siteverify_reply'])) {
+        return $GLOBALS['siteverify_reply'];
+    }
     return ['code' => 200, 'body' => '{"success":true}'];
 }
 function wp_delete_post($id, $force = false) { $GLOBALS['deleted'][] = [$id, $force]; return empty($GLOBALS['delete_fails']) ? (object) ['ID' => $id] : false; }
@@ -703,6 +706,50 @@ achord_inquiry_mail_stamp(ACHORD_INQUIRY_MAIL_OK, 2000000000.75);
 achord_inquiry_mail_stamp(ACHORD_INQUIRY_MAIL_OK, 2000000000.1);
 check(achord_inquiry_mail_read(ACHORD_INQUIRY_MAIL_OK)[0] === 2000000000.75, '发成功的时间也只往前走');
 check(in_array([ACHORD_INQUIRY_MAIL_OK, 'options'], $GLOBALS['cache_deletes'] ?? [], true), '写完清掉选项缓存，读到的是库里最新的');
+
+// 验证码加载不出来：带上 turnstile_unavailable 照收，标「未经人机验证」；同一 IP 每小时 3 条、全站每天 30 条封顶。
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_enabled'] = '1';
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_secret_key'] = 'secret';
+$GLOBALS['wpdb']->rows = [];
+$r = submit(['name' => 'Dee', 'email' => 'dee@client.test', 'product' => 'SQ5 Crane', 'message' => 'Need a crane for my truck']);
+check(!$r->success && ($r->data['code'] ?? '') === 'verificationRequired', '验证码开着、没 token 也没说加载不出来：照旧拒收');
+$GLOBALS['mails'] = [];
+$GLOBALS['dingtalk'] = [];
+$r = submit(['name' => 'Dee', 'email' => 'dee@client.test', 'product' => 'SQ5 Crane', 'message' => 'Need a crane for my truck', 'boblift_turnstile_unavailable' => '1']);
+$uid = (int) ($r->data['id'] ?? 0);
+check($r->success && $uid > 0 && str_contains((string) ($GLOBALS['meta'][$uid]['_unchecked'] ?? ''), '加载不出'), '验证码加载不出来：照收，存下「未经人机验证」的原因');
+check(str_contains($GLOBALS['mails'][0]['body'] ?? '', '未经人机验证'), '邮件写明未经人机验证');
+check(in_array('未经人机验证', array_column($GLOBALS['dingtalk'][0][0]['meta'] ?? [], 'label'), true), '钉钉写明未经人机验证');
+check(achord_inquiry_unchecked_reason() !== '' && (submit(['name' => 'Dee', 'email' => 'dee@client.test', 'message' => 'x', 'cf-turnstile-response' => 'tok'])->success) && achord_inquiry_unchecked_reason() === '', '下一条正常验证过的不带上一条的标记');
+$GLOBALS['wpdb']->rows = [];
+$results = [];
+for ($i = 0; $i < 4; $i++) {
+    $_SERVER['REMOTE_ADDR'] = '192.0.2.' . (20 + intdiv($i, 4));
+    $results[] = submit(['name' => 'Eve', 'email' => 'eve@client.test', 'message' => 'Need a crane', 'boblift_turnstile_unavailable' => '1'])->success;
+}
+check($results === [true, true, true, false], '同一 IP 一小时最多 3 条不验证的');
+$GLOBALS['wpdb']->rows = [];
+$results = [];
+for ($i = 0; $i < 31; $i++) {
+    $_SERVER['REMOTE_ADDR'] = '198.18.0.' . ($i + 1);
+    $results[] = submit(['name' => 'Fay', 'email' => 'fay@client.test', 'message' => 'Need a crane', 'boblift_turnstile_unavailable' => '1'])->success;
+}
+check(count(array_filter($results)) === 30 && end($results) === false, '全站一天最多 30 条不验证的');
+$GLOBALS['wpdb']->rows = [];
+$_SERVER['REMOTE_ADDR'] = '192.0.2.10';
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_fallback'] = '0';
+$r = submit(['name' => 'Gus', 'email' => 'gus@client.test', 'message' => 'Need a crane', 'boblift_turnstile_unavailable' => '1']);
+check(!$r->success && ($r->data['code'] ?? '') === 'verificationRequired', '询盘设置关掉后：说加载不出来也要验证码');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_fallback'] = '1';
+$GLOBALS['siteverify_reply'] = new WP_Error('http_request_failed', 'cURL error 28');
+$r = submit(['name' => 'Hal', 'email' => 'hal@client.test', 'message' => 'Need a crane', 'cf-turnstile-response' => 'tok']);
+check($r->success && str_contains((string) ($GLOBALS['meta'][(int) $r->data['id']]['_unchecked'] ?? ''), '连不上'), '本站连不上 Cloudflare 校验：照收并标明');
+$GLOBALS['siteverify_reply'] = ['code' => 200, 'body' => '{"success":false}'];
+$r = submit(['name' => 'Ivy', 'email' => 'ivy@client.test', 'message' => 'Need a crane', 'cf-turnstile-response' => 'bad', 'boblift_turnstile_unavailable' => '1']);
+check(!$r->success && ($r->data['code'] ?? '') === 'verificationRequired', 'Cloudflare 判定没过：不走备用通道');
+unset($GLOBALS['siteverify_reply']);
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_enabled'] = '0';
+$GLOBALS['wpdb']->rows = [];
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);

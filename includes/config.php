@@ -73,6 +73,8 @@ function achord_inquiry_options(): array
         'turnstile_local_mode' => '0',
         'turnstile_site_key' => '',
         'turnstile_secret_key' => '',
+        // 验证码加载不出来时照收询盘（标「未经人机验证」，includes/guard.php achord_inquiry_let_unchecked）。
+        'turnstile_fallback' => '1',
         'blocklist' => '',
         'store_ip' => '0',
         'suspect_check' => '1',
