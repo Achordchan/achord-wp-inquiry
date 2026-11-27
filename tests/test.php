@@ -849,6 +849,27 @@ $GLOBALS['cas_always_lose'] = true;
 $r = ($set['execute_callback'])(['add' => ['never@example.com']]);
 unset($GLOBALS['cas_always_lose']);
 check(is_wp_error($r) && $r->code === 'achord_inquiry_busy' && $GLOBALS['cas_tries'] === 5 && $GLOBALS['options'][ACHORD_INQUIRY_OPTION] === $before, '每次都被别人抢先：试 5 轮后放弃，请稍后再试，不写');
+// 经 WordPress 保存（设置页、/wp/v2/settings）也拿同一把锁，到请求结束才放：期间接口改不了，不会被它的旧名单覆盖。
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = ['recipient' => 'a@example.com', 'blocklist' => 'old@example.com'];
+$clean = achord_inquiry_sanitize_saved_options(['recipient' => 'b@example.com']);
+check($clean['recipient'] === 'b@example.com' && $clean['blocklist'] === 'old@example.com' && isset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist']), '经 WordPress 保存：拿锁，从库里最新的设置合并');
+$GLOBALS['filters']['achord_inquiry_lock_wait'] = fn($w) => 0.0;
+// 接口调用是另一个请求：它没有这个请求持有的锁计数，只看得到库里的锁。
+$held = &achord_inquiry_locks_held();
+$mine = $held;
+$held = [];
+$r = ($set['execute_callback'])(['add' => ['mid@example.com']]);
+$held = $mine;
+unset($held);
+check(is_wp_error($r) && $r->code === 'achord_inquiry_busy' && !str_contains($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['blocklist'], 'mid@example.com'), '设置还在保存中：接口报忙，不写');
+do_action('shutdown');
+check(!isset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist']), '请求结束放锁');
+$r = ($set['execute_callback'])(['add' => ['mid@example.com']]);
+check(!is_wp_error($r) && $r['added'] === ['mid@example.com'], '放锁后接口照常改');
+$GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist'] = time() + 300;
+$stored = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+check(achord_inquiry_sanitize_saved_options(['recipient' => 'c@example.com', 'blocklist' => '']) === $stored, '接口正在改时经 WordPress 保存：原样返回已存的设置，什么都不写');
+unset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist'], $GLOBALS['filters']['achord_inquiry_lock_wait']);
 // 已保存的其他设置按原样留着，不重新清理（比如含 %ab 的密钥、超过 60 的等待秒数）。
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION] = ['alert_secret' => 'abc%ab-secret-1234567890xyz', 'ai_timeout' => '90', 'blocklist' => ''];
 $r = ($set['execute_callback'])(['add' => ['kept@example.com']]);

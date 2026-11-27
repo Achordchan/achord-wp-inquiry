@@ -128,8 +128,10 @@ function achord_inquiry_forget_options(): void
  * The save is a compare-and-swap on the option row: read the stored value, apply the change to it, and write only if
  * the row still holds exactly what was read (compared byte for byte: the options table's collation ignores case). If anyone saved in between (another call, the settings page, /wp/v2/settings),
  * nothing is written and the change is applied again to what they saved, so no one's change is lost; after a few
- * rounds of that the call gives up and asks to try again. A lock keeps two calls of this ability from racing each
- * other to begin with. A database error fails the call instead of reporting entries as added or removed.
+ * rounds of that the call gives up and asks to try again. The same lock is held by every save through WordPress
+ * (achord_inquiry_sanitize_saved_options(), from its read of the settings to the end of that request), so a settings
+ * save already in progress cannot write its older copy of the blocklist over this call's change, and two calls of this
+ * ability do not race each other. A database error fails the call instead of reporting entries as added or removed.
  */
 function achord_inquiry_update_blocklist(array $add, array $remove)
 {
