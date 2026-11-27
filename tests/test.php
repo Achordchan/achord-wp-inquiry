@@ -61,7 +61,8 @@ function sanitize_text_field($s) { return trim(preg_replace('/\s+/', ' ', strip_
 function wp_json_encode($v, $f = 0) { return json_encode($v, $f); }
 function get_posts($a = []) { $GLOBALS['get_posts_args'][] = $a; return $GLOBALS['posts'] ?? []; }
 function get_the_title($p = 0) { return is_object($p) ? $p->post_title : ''; }
-function sanitize_textarea_field($s) { return trim(strip_tags((string) $s)); }
+// 和 WordPress 一样会去掉 %xx 编码。
+function sanitize_textarea_field($s) { return trim(preg_replace('/%[a-f0-9]{2}/i', '', strip_tags((string) $s))); }
 function sanitize_email($s) { return filter_var(trim((string) $s), FILTER_VALIDATE_EMAIL) ?: ''; }
 function sanitize_key($s) { return preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $s)); }
 function sanitize_html_class($s) { return preg_replace('/[^A-Za-z0-9_-]/', '', (string) $s); }
@@ -149,7 +150,7 @@ class FakeWpdb
     {
         [$sql, $args] = $q;
         // 黑名单接口的比较后写入：行还是读到的那个值才写。
-        if (str_contains($sql, 'AND option_value = %s') || str_contains($sql, "VALUES (%s, %s, 'yes')")) {
+        if (str_contains($sql, 'AND BINARY option_value = %s') || str_contains($sql, "VALUES (%s, %s, 'yes')")) {
             if (!empty($GLOBALS['wpdb_fails'])) {
                 return false;
             }
@@ -836,6 +837,13 @@ $GLOBALS['after_select'] = function () { $GLOBALS['options'][ACHORD_INQUIRY_OPTI
 $r = ($set['execute_callback'])(['add' => ['race@example.com']]);
 $o = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
 check(!is_wp_error($r) && $r['added'] === ['race@example.com'] && $o['recipient'] === 'new-sales@example.com' && str_contains($o['blocklist'], 'race@example.com'), '中途别人存了设置：重读后再改，两边的改动都在');
+$r = ($set['execute_callback'])(['add' => ['buyer%ab@example.com', '<b>@x.test']]);
+check($r['invalid'] === ['buyer%ab@example.com', '<b>@x.test'] && $r['added'] === [] && !str_contains($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['blocklist'], 'buyer@example.com'), '保存时会被改掉的条目（%xx 编码、标签）不保存，列为格式不对');
+$before = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+$GLOBALS['cas_always_lose'] = true;
+$r = ($set['execute_callback'])(['remove' => ['race@example.com'], 'add' => ['race@example.com']]);
+unset($GLOBALS['cas_always_lose']);
+check(!is_wp_error($r) && $r['removed'] === ['race@example.com'] && $r['added'] === ['race@example.com'] && ($GLOBALS['cas_tries'] ?? 0) === 0 && $GLOBALS['options'][ACHORD_INQUIRY_OPTION] === $before, '删了又加回同一条、存的值没变：不写库，不误报忙');
 $before = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
 $GLOBALS['cas_always_lose'] = true;
 $r = ($set['execute_callback'])(['add' => ['never@example.com']]);

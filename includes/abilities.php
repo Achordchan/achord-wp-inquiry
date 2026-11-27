@@ -92,9 +92,14 @@ function achord_inquiry_blocklist_report(): array
     return ['entries' => $entries, 'count' => count($entries)];
 }
 
-/** Whether a blocklist entry (already lower-cased) is one of the kinds achord_inquiry_block_reason() matches. */
+/** Whether a blocklist entry (already lower-cased) is one of the kinds achord_inquiry_block_reason() matches and survives saving unchanged. */
 function achord_inquiry_valid_block_entry(string $entry): bool
 {
+    // Saving the settings runs the blocklist through sanitize_textarea_field(), which drops %xx octets and anything
+    // tag-like (buyer%ab@example.com would be stored as buyer@example.com): such an entry could not be stored as given.
+    if (sanitize_textarea_field($entry) !== $entry) {
+        return false;
+    }
     if (str_starts_with($entry, '@')) {
         $domain = substr($entry, 1);
         return str_contains($domain, '.') && (bool) filter_var($domain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME);
@@ -121,7 +126,7 @@ function achord_inquiry_forget_options(): void
  * (theme defaults included, as saving the settings page does), so only the blocklist changes.
  *
  * The save is a compare-and-swap on the option row: read the stored value, apply the change to it, and write only if
- * the row still holds what was read. If anyone saved in between (another call, the settings page, /wp/v2/settings),
+ * the row still holds exactly what was read (compared byte for byte: the options table's collation ignores case). If anyone saved in between (another call, the settings page, /wp/v2/settings),
  * nothing is written and the change is applied again to what they saved, so no one's change is lost; after a few
  * rounds of that the call gives up and asks to try again. A lock keeps two calls of this ability from racing each
  * other to begin with. A database error fails the call instead of reporting entries as added or removed.
@@ -185,9 +190,14 @@ function achord_inquiry_update_blocklist_locked(array $add, array $remove)
 
         $options['blocklist'] = implode("\n", $entries);
         $value = maybe_serialize(achord_inquiry_sanitize_options($options));
+        if ($stored !== null && $value === $stored) {
+            // Removed and added back the same entries: the stored settings already read this way, nothing to write
+            // (MySQL would report 0 rows changed, which must not be taken for someone else's save).
+            return $result + ['entries' => $entries, 'count' => count($entries)];
+        }
         $written = $stored === null
             ? $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'yes')", ACHORD_INQUIRY_OPTION, $value))
-            : $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s", $value, ACHORD_INQUIRY_OPTION, $stored));
+            : $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND BINARY option_value = %s", $value, ACHORD_INQUIRY_OPTION, $stored));
         // Whatever happened, this request's cached copy of the settings is out of date now.
         achord_inquiry_forget_options();
         if ($written === false) {
