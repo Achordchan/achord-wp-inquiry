@@ -29,6 +29,48 @@ function achord_inquiry_sanitize_options($value): array
     return $clean;
 }
 
+/**
+ * The sanitize callback for every save through WordPress (the settings page, /wp/v2/settings): it takes the blocklist
+ * lock (includes/abilities.php) and keeps it until the request ends, so the read of the saved settings here, the merge
+ * and WordPress's write that follows all happen while no blocklist ability call can run, and the merge starts from the
+ * settings as stored now rather than this request's cached copy. If the lock cannot be had (a blocklist call is still
+ * running after 10 seconds), nothing is changed: the stored settings are returned as they are, so WordPress writes
+ * nothing, and the settings page says to try again.
+ * What a settings form itself submits for the blocklist (the textarea as it was loaded) is still saved as submitted.
+ */
+function achord_inquiry_sanitize_saved_options($value): array
+{
+    if (!achord_inquiry_hold_settings_lock()) {
+        if (function_exists('add_settings_error')) {
+            add_settings_error(ACHORD_INQUIRY_OPTION, 'achord_inquiry_busy', '询盘黑名单正在经接口修改，这次没有保存，请稍后再试。');
+        }
+        $stored = get_option(ACHORD_INQUIRY_OPTION, null);
+        if (is_array($stored)) {
+            return $stored;
+        }
+    }
+    achord_inquiry_forget_options();
+    return achord_inquiry_sanitize_options($value);
+}
+
+/** Take the blocklist lock for the rest of this request (released at shutdown). True if held. */
+function achord_inquiry_hold_settings_lock(): bool
+{
+    static $held = false;
+    if ($held) {
+        return true;
+    }
+    if (!achord_inquiry_lock('blocklist', 10.0)) {
+        return false;
+    }
+    $held = true;
+    add_action('shutdown', static function () use (&$held): void {
+        achord_inquiry_unlock('blocklist');
+        $held = false;
+    });
+    return true;
+}
+
 add_action('init', static function (): void {
     if (!achord_inquiry_active()) {
         return;
@@ -41,7 +83,7 @@ add_action('init', static function (): void {
         'type' => 'object',
         'description' => '询盘设置：收件邮箱、Turnstile、黑名单、是否保存 IP、自动标记疑似垃圾、AI 判断、表单报警',
         'default' => [],
-        'sanitize_callback' => 'achord_inquiry_sanitize_options',
+        'sanitize_callback' => 'achord_inquiry_sanitize_saved_options',
         'show_in_rest' => ['schema' => ['type' => 'object', 'properties' => $properties]],
     ]);
 });

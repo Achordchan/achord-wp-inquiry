@@ -135,10 +135,10 @@ function achord_inquiry_take_slot(string $kind, string $key, int $limit, int $se
     return $taken === 1;
 }
 
-/** The blocklist entries as typed, lower-cased, without blanks or duplicates. */
-function achord_inquiry_blocklist(): array
+/** The blocklist entries as typed (the saved blocklist, or $text), lower-cased, without blanks or duplicates. */
+function achord_inquiry_blocklist(?string $text = null): array
 {
-    $entries = preg_split('/[\s,;]+/', strtolower((string) achord_inquiry_options()['blocklist'])) ?: [];
+    $entries = preg_split('/[\s,;]+/', strtolower($text ?? (string) achord_inquiry_options()['blocklist'])) ?: [];
     return array_values(array_unique(array_filter(array_map('trim', $entries), 'strlen')));
 }
 
@@ -317,8 +317,9 @@ function achord_inquiry_suspect_reason(array $fields, string $ip): string
  * mark/restore never act on the same inquiry at once. INSERT IGNORE is atomic; a lock left by a crashed request expires
  * after 5 minutes. Waits up to $wait seconds and returns false if it still cannot get the lock: the caller must not touch
  * the inquiry then (the screening leaves it to the safety net, an administrator is asked to try again). Re-entrant.
+ * A string key locks something other than an inquiry ('blocklist' for the blocklist abilities, includes/abilities.php).
  */
-function achord_inquiry_lock(int $post_id, float $wait = 15.0): bool
+function achord_inquiry_lock(int|string $post_id, float $wait = 15.0): bool
 {
     global $wpdb;
     $held = &achord_inquiry_locks_held();
@@ -340,7 +341,7 @@ function achord_inquiry_lock(int $post_id, float $wait = 15.0): bool
     return false;
 }
 
-function achord_inquiry_unlock(int $post_id): void
+function achord_inquiry_unlock(int|string $post_id): void
 {
     global $wpdb;
     $held = &achord_inquiry_locks_held();

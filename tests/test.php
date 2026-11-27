@@ -5,7 +5,7 @@ define('ABSPATH', __DIR__);
 define('WEEK_IN_SECONDS', 604800);
 define('HOUR_IN_SECONDS', 3600);
 define('DAY_IN_SECONDS', 86400);
-define('ACHORD_INQUIRY_VERSION', '0.6.0');
+define('ACHORD_INQUIRY_VERSION', '0.7.0');
 define('ACHORD_INQUIRY_FILE', dirname(__DIR__) . '/achord-wp-inquiry.php');
 
 $GLOBALS['options'] = [];
@@ -34,6 +34,9 @@ class WP_Error
     public function __construct(public string $code = '', public string $message = '', public $data = null) {}
     public function get_error_message() { return $this->message; }
 }
+function current_user_can($c) { return $GLOBALS['can'] ?? true; }
+function wp_register_ability($name, $args) { $GLOBALS['abilities'][$name] = $args; return true; }
+function wp_register_ability_category($slug, $args) { $GLOBALS['ability_categories'][$slug] = $args; return true; }
 function wp_strip_all_tags($s) { return strip_tags((string) $s); }
 class WP_Post
 {
@@ -48,6 +51,8 @@ function add_action($h, $cb, $p = 10, $n = 1) { $GLOBALS['actions'][$h][] = $cb;
 function do_action($h, ...$a) { foreach ($GLOBALS['actions'][$h] ?? [] as $cb) { $cb(...$a); } }
 function get_option($k, $d = false) { return $GLOBALS['options'][$k] ?? $d; }
 function update_option($k, $v, $a = null) { $GLOBALS['options'][$k] = $v; return true; }
+function maybe_serialize($v) { return is_array($v) || is_object($v) ? serialize($v) : $v; }
+function maybe_unserialize($v) { $u = @unserialize((string) $v); return $u === false && $v !== serialize(false) ? $v : $u; }
 function wp_parse_url($u, $c = -1) { return parse_url($u, $c); }
 function home_url($p = '') { return 'https://example.com' . $p; }
 function admin_url($p = '') { return 'https://example.com/wp-admin/' . $p; }
@@ -56,7 +61,8 @@ function sanitize_text_field($s) { return trim(preg_replace('/\s+/', ' ', strip_
 function wp_json_encode($v, $f = 0) { return json_encode($v, $f); }
 function get_posts($a = []) { $GLOBALS['get_posts_args'][] = $a; return $GLOBALS['posts'] ?? []; }
 function get_the_title($p = 0) { return is_object($p) ? $p->post_title : ''; }
-function sanitize_textarea_field($s) { return trim(strip_tags((string) $s)); }
+// 和 WordPress 一样会去掉 %xx 编码。
+function sanitize_textarea_field($s) { return trim(preg_replace('/%[a-f0-9]{2}/i', '', strip_tags((string) $s))); }
 function sanitize_email($s) { return filter_var(trim((string) $s), FILTER_VALIDATE_EMAIL) ?: ''; }
 function sanitize_key($s) { return preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $s)); }
 function sanitize_html_class($s) { return preg_replace('/[^A-Za-z0-9_-]/', '', (string) $s); }
@@ -127,9 +133,45 @@ class FakeWpdb
     public array $locks = [];
     public function prepare($sql, ...$args) { return [$sql, $args]; }
     public function esc_like($s) { return $s; }
+    public function get_var($q)
+    {
+        [$sql, $args] = $q;
+        $v = $GLOBALS['options'][$args[0]] ?? null;
+        $out = $v === null ? null : maybe_serialize($v);
+        // 读完、写之前别人存了设置（测试并发用，只触发一次）。
+        if (isset($GLOBALS['after_select'])) {
+            $cb = $GLOBALS['after_select'];
+            unset($GLOBALS['after_select']);
+            $cb();
+        }
+        return $out;
+    }
     public function query($q)
     {
         [$sql, $args] = $q;
+        // 黑名单接口的比较后写入：行还是读到的那个值才写。
+        if (str_contains($sql, 'AND BINARY option_value = %s') || str_contains($sql, "VALUES (%s, %s, 'yes')")) {
+            if (!empty($GLOBALS['wpdb_fails'])) {
+                return false;
+            }
+            if (!empty($GLOBALS['cas_always_lose'])) {
+                $GLOBALS['cas_tries'] = ($GLOBALS['cas_tries'] ?? 0) + 1;
+                return 0;
+            }
+            if (str_starts_with($sql, 'INSERT')) {
+                if (isset($GLOBALS['options'][$args[0]])) {
+                    return 0;
+                }
+                $GLOBALS['options'][$args[0]] = maybe_unserialize($args[1]);
+                return 1;
+            }
+            [$value, $name, $expected] = $args;
+            if (!isset($GLOBALS['options'][$name]) || maybe_serialize($GLOBALS['options'][$name]) !== $expected) {
+                return 0;
+            }
+            $GLOBALS['options'][$name] = maybe_unserialize($value);
+            return 1;
+        }
         // 发信结果：「时间|原因」，只在新时间更晚时才写（和 MySQL 的条件 UPDATE 一样）。
         if (str_contains($sql, "VALUES (%s, '0|', 'no')")) {
             $GLOBALS['options'][$args[0]] ??= '0|';
@@ -183,6 +225,7 @@ require dirname(__DIR__) . '/includes/notify.php';
 require dirname(__DIR__) . '/includes/alert.php';
 require dirname(__DIR__) . '/includes/submit.php';
 require dirname(__DIR__) . '/includes/settings.php';
+require dirname(__DIR__) . '/includes/abilities.php';
 
 $failures = 0;
 function check(bool $ok, string $what): void
@@ -750,6 +793,92 @@ check(!$r->success && ($r->data['code'] ?? '') === 'verificationRequired', 'Clou
 unset($GLOBALS['siteverify_reply']);
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_enabled'] = '0';
 $GLOBALS['wpdb']->rows = [];
+
+// 黑名单接口（abilities）：只读黑名单、加删条目，其他设置不动。
+$saved_options = $GLOBALS['options'][ACHORD_INQUIRY_OPTION] ?? null;
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = ['ai_api_key' => 'secret-key', 'recipient' => 'sales@example.com', 'blocklist' => "spam@example.com, @Bad.test\n203.0.113.0/24"];
+do_action('wp_abilities_api_categories_init');
+do_action('wp_abilities_api_init');
+$get = $GLOBALS['abilities']['achord-inquiry/get-blocklist'] ?? null;
+$set = $GLOBALS['abilities']['achord-inquiry/update-blocklist'] ?? null;
+check(isset($GLOBALS['ability_categories']['achord-inquiry']) && $get && $set, '登记了询盘分类和两项黑名单能力');
+check($get['meta']['annotations']['readonly'] === true && $set['meta']['annotations']['readonly'] === false && $get['meta']['show_in_rest'] && $set['meta']['show_in_rest'], '读的标只读、改的不是，都对接口开放');
+check(($get['execute_callback'])() === ['entries' => ['spam@example.com', '@bad.test', '203.0.113.0/24'], 'count' => 3], '读出名单（小写、逗号分隔也认），不带其他设置');
+$GLOBALS['can'] = false;
+check(($get['permission_callback'])() === false && ($set['permission_callback'])(['add' => ['x@y.test']]) === false, '不是管理员不能读也不能改');
+$GLOBALS['can'] = true;
+$r = ($set['execute_callback'])(['add' => [' Andre.Richardson@JXNenco.com ', '@jxnenco.com', 'spam@example.com', 'not an entry', '0.0.0.0/0', '@nodot', '198.51.100.7', '2001:db8::/32', '@jxnenco.com']]);
+check($r['added'] === ['andre.richardson@jxnenco.com', '@jxnenco.com', '198.51.100.7', '2001:db8::/32'], '加条目：去空格、转小写、同次重复只加一次');
+check($r['already_listed'] === ['spam@example.com'] && $r['invalid'] === ['not an entry', '0.0.0.0/0', '@nodot'], '已有的不重复加，格式不对的（含 /0、没点的域名）不保存');
+check($r['count'] === 7 && achord_inquiry_block_reason('x@jxnenco.com', '') === '邮箱 @jxnenco.com' && achord_inquiry_block_reason('a@ok.test', '198.51.100.7') === 'IP 198.51.100.7', '加完立即生效');
+$o = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+check($o['ai_api_key'] === 'secret-key' && $o['recipient'] === 'sales@example.com' && !str_contains(json_encode($r), 'secret-key'), '其他设置原样保存，结果里不带密钥');
+check($o['blocklist'] === "spam@example.com\n@bad.test\n203.0.113.0/24\nandre.richardson@jxnenco.com\n@jxnenco.com\n198.51.100.7\n2001:db8::/32", '保存成每行一个');
+$r = ($set['execute_callback'])(['remove' => ['SPAM@example.com', 'nobody@example.com']]);
+check($r['removed'] === ['spam@example.com'] && $r['not_listed'] === ['nobody@example.com'] && achord_inquiry_block_reason('spam@example.com', '') === '', '删条目：不分大小写，不在名单里的列出来');
+$before = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+$r = ($set['execute_callback'])(['add' => ['@jxnenco.com'], 'remove' => ['missing@example.com']]);
+check($r['added'] === [] && $r['removed'] === [] && $GLOBALS['options'][ACHORD_INQUIRY_OPTION] === $before, '没有实际改动时不写设置');
+check(in_array([ACHORD_INQUIRY_OPTION, 'options'], $GLOBALS['cache_deletes'], true) && in_array(['alloptions', 'options'], $GLOBALS['cache_deletes'], true), '改之前清掉本请求的设置缓存，从库里最新的名单改起');
+$before = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+$GLOBALS['wpdb_fails'] = true;
+$r = ($set['execute_callback'])(['add' => ['lost@example.com']]);
+unset($GLOBALS['wpdb_fails']);
+check(is_wp_error($r) && $r->code === 'achord_inquiry_not_saved' && $GLOBALS['options'][ACHORD_INQUIRY_OPTION] === $before, '数据库没写进去：报错，不说已加');
+$GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist'] = time() + 300;
+$GLOBALS['filters']['achord_inquiry_lock_wait'] = fn($w) => 0.0;
+$r = ($set['execute_callback'])(['add' => ['busy@example.com']]);
+check(is_wp_error($r) && $r->code === 'achord_inquiry_busy' && !str_contains($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['blocklist'], 'busy@example.com'), '另一个请求正在改：不动名单，请稍后再试');
+unset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist'], $GLOBALS['filters']['achord_inquiry_lock_wait']);
+$r = ($set['execute_callback'])(['add' => ['after@example.com']]);
+check(!is_wp_error($r) && $r['added'] === ['after@example.com'] && !isset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist']), '改完放开锁，下一次照常改');
+// 读完、写之前有人在设置页改了收件人：不覆盖他的改动，在他存的设置上重新加。
+$GLOBALS['after_select'] = function () { $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['recipient'] = 'new-sales@example.com'; };
+$r = ($set['execute_callback'])(['add' => ['race@example.com']]);
+$o = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+check(!is_wp_error($r) && $r['added'] === ['race@example.com'] && $o['recipient'] === 'new-sales@example.com' && str_contains($o['blocklist'], 'race@example.com'), '中途别人存了设置：重读后再改，两边的改动都在');
+$r = ($set['execute_callback'])(['add' => ['buyer%ab@example.com', '<b>@x.test']]);
+check($r['invalid'] === ['buyer%ab@example.com', '<b>@x.test'] && $r['added'] === [] && !str_contains($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['blocklist'], 'buyer@example.com'), '保存时会被改掉的条目（%xx 编码、标签）不保存，列为格式不对');
+$before = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+$GLOBALS['cas_always_lose'] = true;
+$r = ($set['execute_callback'])(['remove' => ['race@example.com'], 'add' => ['race@example.com']]);
+unset($GLOBALS['cas_always_lose']);
+check(!is_wp_error($r) && $r['removed'] === ['race@example.com'] && $r['added'] === ['race@example.com'] && ($GLOBALS['cas_tries'] ?? 0) === 0 && $GLOBALS['options'][ACHORD_INQUIRY_OPTION] === $before, '删了又加回同一条、存的值没变：不写库，不误报忙');
+$before = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+$GLOBALS['cas_always_lose'] = true;
+$r = ($set['execute_callback'])(['add' => ['never@example.com']]);
+unset($GLOBALS['cas_always_lose']);
+check(is_wp_error($r) && $r->code === 'achord_inquiry_busy' && $GLOBALS['cas_tries'] === 5 && $GLOBALS['options'][ACHORD_INQUIRY_OPTION] === $before, '每次都被别人抢先：试 5 轮后放弃，请稍后再试，不写');
+// 经 WordPress 保存（设置页、/wp/v2/settings）也拿同一把锁，到请求结束才放：期间接口改不了，不会被它的旧名单覆盖。
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = ['recipient' => 'a@example.com', 'blocklist' => 'old@example.com'];
+$clean = achord_inquiry_sanitize_saved_options(['recipient' => 'b@example.com']);
+check($clean['recipient'] === 'b@example.com' && $clean['blocklist'] === 'old@example.com' && isset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist']), '经 WordPress 保存：拿锁，从库里最新的设置合并');
+$GLOBALS['filters']['achord_inquiry_lock_wait'] = fn($w) => 0.0;
+// 接口调用是另一个请求：它没有这个请求持有的锁计数，只看得到库里的锁。
+$held = &achord_inquiry_locks_held();
+$mine = $held;
+$held = [];
+$r = ($set['execute_callback'])(['add' => ['mid@example.com']]);
+$held = $mine;
+unset($held);
+check(is_wp_error($r) && $r->code === 'achord_inquiry_busy' && !str_contains($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['blocklist'], 'mid@example.com'), '设置还在保存中：接口报忙，不写');
+do_action('shutdown');
+check(!isset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist']), '请求结束放锁');
+$r = ($set['execute_callback'])(['add' => ['mid@example.com']]);
+check(!is_wp_error($r) && $r['added'] === ['mid@example.com'], '放锁后接口照常改');
+$GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist'] = time() + 300;
+$stored = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+check(achord_inquiry_sanitize_saved_options(['recipient' => 'c@example.com', 'blocklist' => '']) === $stored, '接口正在改时经 WordPress 保存：原样返回已存的设置，什么都不写');
+unset($GLOBALS['wpdb']->locks['_achord_inquiry_lock_blocklist'], $GLOBALS['filters']['achord_inquiry_lock_wait']);
+// 已保存的其他设置按原样留着，不重新清理（比如含 %ab 的密钥、超过 60 的等待秒数）。
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = ['alert_secret' => 'abc%ab-secret-1234567890xyz', 'ai_timeout' => '90', 'blocklist' => ''];
+$r = ($set['execute_callback'])(['add' => ['kept@example.com']]);
+check($GLOBALS['options'][ACHORD_INQUIRY_OPTION] === ['alert_secret' => 'abc%ab-secret-1234567890xyz', 'ai_timeout' => '90', 'blocklist' => 'kept@example.com'], '只写黑名单：其他已保存的值一个字节不变');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = null;
+$GLOBALS['filters']['achord_inquiry_default_options'] = fn($d) => ['blocklist' => "spam@example.com\n@bad.test\n203.0.113.0/24", 'turnstile_site_key' => 'site', 'alert_secret' => 'theme%ab-secret-1234567890'] + $d;
+$r = ($set['execute_callback'])(['add' => ['new@example.com']]);
+check($GLOBALS['options'][ACHORD_INQUIRY_OPTION] === ['blocklist' => "spam@example.com\n@bad.test\n203.0.113.0/24\nnew@example.com"] && achord_inquiry_options()['alert_secret'] === 'theme%ab-secret-1234567890' && achord_inquiry_options()['turnstile_site_key'] === 'site', '没保存过设置时，在主题给的默认名单上加，只存黑名单，其他照旧用主题的值');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = $saved_options;
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);

@@ -9,6 +9,7 @@ BOB-LIFT 各站共用的询盘后台。表单长什么样由主题决定，提�
 - 存储：后台「询盘」列表（每条询盘一篇私有文章，字段存在 `_字段名`），列表列、只读详情框、复制客户信息按钮，管理员只读接口 `/wp/v2/<rest_base>`；「标为无效」（列表行操作，或管理员经接口只写 `meta.<rest_record>_invalid` 一个字段写原因、写空字符串恢复），日报统计真实询盘时排除带 `invalid` 的
 - 通知：经典卡片邮件（来源渠道、设备、国家、语言、时间、IP 两行六格，广告原始参数放底部），装了 achord-wp-dingtalk 时推钉钉
 - 设置：后台「设置 → 询盘设置」，也可经 `/wp/v2/settings` 的 `achord_inquiry_options` 读写
+- 黑名单接口（WordPress 6.9+ 的 abilities，`includes/abilities.php`）：`achord-inquiry/get-blocklist` 读、`achord-inquiry/update-blocklist` 传 `{add: [...], remove: [...]}` 加删条目，都要管理员；只动黑名单，格式不对的条目不保存、在 `invalid` 里列出。WordPress.com 连接器的 remote abilities 可直接调用
 
 - 报警：询盘发不出去时报给报警服务（`monitor/worker.js`，跑在 Cloudflare），由它合并同类错误后开 GitHub Issue、推钉钉，每天新加坡 09:00 自检一次。见下面「表单报警」
 
