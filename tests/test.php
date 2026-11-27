@@ -849,9 +849,14 @@ $GLOBALS['cas_always_lose'] = true;
 $r = ($set['execute_callback'])(['add' => ['never@example.com']]);
 unset($GLOBALS['cas_always_lose']);
 check(is_wp_error($r) && $r->code === 'achord_inquiry_busy' && $GLOBALS['cas_tries'] === 5 && $GLOBALS['options'][ACHORD_INQUIRY_OPTION] === $before, '每次都被别人抢先：试 5 轮后放弃，请稍后再试，不写');
+// 已保存的其他设置按原样留着，不重新清理（比如含 %ab 的密钥、超过 60 的等待秒数）。
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = ['alert_secret' => 'abc%ab-secret-1234567890xyz', 'ai_timeout' => '90', 'blocklist' => ''];
+$r = ($set['execute_callback'])(['add' => ['kept@example.com']]);
+check($GLOBALS['options'][ACHORD_INQUIRY_OPTION] === ['alert_secret' => 'abc%ab-secret-1234567890xyz', 'ai_timeout' => '90', 'blocklist' => 'kept@example.com'], '只写黑名单：其他已保存的值一个字节不变');
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION] = null;
+$GLOBALS['filters']['achord_inquiry_default_options'] = fn($d) => ['blocklist' => "spam@example.com\n@bad.test\n203.0.113.0/24", 'turnstile_site_key' => 'site', 'alert_secret' => 'theme%ab-secret-1234567890'] + $d;
 $r = ($set['execute_callback'])(['add' => ['new@example.com']]);
-check(str_contains($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['blocklist'], "spam@example.com\n@bad.test\n203.0.113.0/24\nnew@example.com") && $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_site_key'] === 'site', '没保存过设置时，在主题给的默认名单上加，主题的其他默认值一起存下');
+check($GLOBALS['options'][ACHORD_INQUIRY_OPTION] === ['blocklist' => "spam@example.com\n@bad.test\n203.0.113.0/24\nnew@example.com"] && achord_inquiry_options()['alert_secret'] === 'theme%ab-secret-1234567890' && achord_inquiry_options()['turnstile_site_key'] === 'site', '没保存过设置时，在主题给的默认名单上加，只存黑名单，其他照旧用主题的值');
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION] = $saved_options;
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";

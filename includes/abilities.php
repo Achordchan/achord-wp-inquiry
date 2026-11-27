@@ -122,8 +122,8 @@ function achord_inquiry_forget_options(): void
 }
 
 /**
- * Add and remove blocklist entries and save the blocklist, one entry per line. The rest of 询盘设置 is saved as it is
- * (theme defaults included, as saving the settings page does), so only the blocklist changes.
+ * Add and remove blocklist entries and save the blocklist, one entry per line. Nothing else in 询盘设置 is touched: the
+ * other saved values stay byte for byte, and values still coming from the theme keep coming from it.
  *
  * The save is a compare-and-swap on the option row: read the stored value, apply the change to it, and write only if
  * the row still holds exactly what was read (compared byte for byte: the options table's collation ignores case). If anyone saved in between (another call, the settings page, /wp/v2/settings),
@@ -160,8 +160,8 @@ function achord_inquiry_update_blocklist_locked(array $add, array $remove)
 
     for ($round = 0; $round < 5; $round++) {
         $stored = $wpdb->get_var($wpdb->prepare("SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", ACHORD_INQUIRY_OPTION));
-        $options = achord_inquiry_options($stored === null ? null : maybe_unserialize($stored));
-        $entries = achord_inquiry_blocklist((string) $options['blocklist']);
+        $saved = $stored === null ? null : maybe_unserialize($stored);
+        $entries = achord_inquiry_blocklist((string) achord_inquiry_options($saved)['blocklist']);
         $result = ['added' => [], 'removed' => [], 'already_listed' => [], 'not_listed' => [], 'invalid' => []];
 
         foreach ($remove as $entry) {
@@ -188,8 +188,13 @@ function achord_inquiry_update_blocklist_locked(array $add, array $remove)
             return $result + ['entries' => $entries, 'count' => count($entries)];
         }
 
+        // Only the blocklist is written; every other key stays exactly as stored. Settings never saved keep coming from
+        // the theme (achord_inquiry_default_options): only the blocklist is stored, the rest is not copied in. Each
+        // entry already survives sanitize_textarea_field() (achord_inquiry_valid_block_entry()), so the list is stored
+        // as the settings page would store it.
+        $options = is_array($saved) ? $saved : [];
         $options['blocklist'] = implode("\n", $entries);
-        $value = maybe_serialize(achord_inquiry_sanitize_options($options));
+        $value = maybe_serialize($options);
         if ($stored !== null && $value === $stored) {
             // Removed and added back the same entries: the stored settings already read this way, nothing to write
             // (MySQL would report 0 rows changed, which must not be taken for someone else's save).
