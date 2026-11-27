@@ -5,7 +5,7 @@ define('ABSPATH', __DIR__);
 define('WEEK_IN_SECONDS', 604800);
 define('HOUR_IN_SECONDS', 3600);
 define('DAY_IN_SECONDS', 86400);
-define('ACHORD_INQUIRY_VERSION', '0.6.0');
+define('ACHORD_INQUIRY_VERSION', '0.7.0');
 define('ACHORD_INQUIRY_FILE', dirname(__DIR__) . '/achord-wp-inquiry.php');
 
 $GLOBALS['options'] = [];
@@ -34,6 +34,9 @@ class WP_Error
     public function __construct(public string $code = '', public string $message = '', public $data = null) {}
     public function get_error_message() { return $this->message; }
 }
+function current_user_can($c) { return $GLOBALS['can'] ?? true; }
+function wp_register_ability($name, $args) { $GLOBALS['abilities'][$name] = $args; return true; }
+function wp_register_ability_category($slug, $args) { $GLOBALS['ability_categories'][$slug] = $args; return true; }
 function wp_strip_all_tags($s) { return strip_tags((string) $s); }
 class WP_Post
 {
@@ -183,6 +186,7 @@ require dirname(__DIR__) . '/includes/notify.php';
 require dirname(__DIR__) . '/includes/alert.php';
 require dirname(__DIR__) . '/includes/submit.php';
 require dirname(__DIR__) . '/includes/settings.php';
+require dirname(__DIR__) . '/includes/abilities.php';
 
 $failures = 0;
 function check(bool $ok, string $what): void
@@ -750,6 +754,36 @@ check(!$r->success && ($r->data['code'] ?? '') === 'verificationRequired', 'Clou
 unset($GLOBALS['siteverify_reply']);
 $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_enabled'] = '0';
 $GLOBALS['wpdb']->rows = [];
+
+// 黑名单接口（abilities）：只读黑名单、加删条目，其他设置不动。
+$saved_options = $GLOBALS['options'][ACHORD_INQUIRY_OPTION] ?? null;
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = ['ai_api_key' => 'secret-key', 'recipient' => 'sales@example.com', 'blocklist' => "spam@example.com, @Bad.test\n203.0.113.0/24"];
+do_action('wp_abilities_api_categories_init');
+do_action('wp_abilities_api_init');
+$get = $GLOBALS['abilities']['achord-inquiry/get-blocklist'] ?? null;
+$set = $GLOBALS['abilities']['achord-inquiry/update-blocklist'] ?? null;
+check(isset($GLOBALS['ability_categories']['achord-inquiry']) && $get && $set, '登记了询盘分类和两项黑名单能力');
+check($get['meta']['annotations']['readonly'] === true && $set['meta']['annotations']['readonly'] === false && $get['meta']['show_in_rest'] && $set['meta']['show_in_rest'], '读的标只读、改的不是，都对接口开放');
+check(($get['execute_callback'])() === ['entries' => ['spam@example.com', '@bad.test', '203.0.113.0/24'], 'count' => 3], '读出名单（小写、逗号分隔也认），不带其他设置');
+$GLOBALS['can'] = false;
+check(($get['permission_callback'])() === false && ($set['permission_callback'])(['add' => ['x@y.test']]) === false, '不是管理员不能读也不能改');
+$GLOBALS['can'] = true;
+$r = ($set['execute_callback'])(['add' => [' Andre.Richardson@JXNenco.com ', '@jxnenco.com', 'spam@example.com', 'not an entry', '0.0.0.0/0', '@nodot', '198.51.100.7', '2001:db8::/32', '@jxnenco.com']]);
+check($r['added'] === ['andre.richardson@jxnenco.com', '@jxnenco.com', '198.51.100.7', '2001:db8::/32'], '加条目：去空格、转小写、同次重复只加一次');
+check($r['already_listed'] === ['spam@example.com'] && $r['invalid'] === ['not an entry', '0.0.0.0/0', '@nodot'], '已有的不重复加，格式不对的（含 /0、没点的域名）不保存');
+check($r['count'] === 7 && achord_inquiry_block_reason('x@jxnenco.com', '') === '邮箱 @jxnenco.com' && achord_inquiry_block_reason('a@ok.test', '198.51.100.7') === 'IP 198.51.100.7', '加完立即生效');
+$o = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+check($o['ai_api_key'] === 'secret-key' && $o['recipient'] === 'sales@example.com' && !str_contains(json_encode($r), 'secret-key'), '其他设置原样保存，结果里不带密钥');
+check($o['blocklist'] === "spam@example.com\n@bad.test\n203.0.113.0/24\nandre.richardson@jxnenco.com\n@jxnenco.com\n198.51.100.7\n2001:db8::/32", '保存成每行一个');
+$r = ($set['execute_callback'])(['remove' => ['SPAM@example.com', 'nobody@example.com']]);
+check($r['removed'] === ['spam@example.com'] && $r['not_listed'] === ['nobody@example.com'] && achord_inquiry_block_reason('spam@example.com', '') === '', '删条目：不分大小写，不在名单里的列出来');
+$before = $GLOBALS['options'][ACHORD_INQUIRY_OPTION];
+$r = ($set['execute_callback'])(['add' => ['@jxnenco.com'], 'remove' => ['missing@example.com']]);
+check($r['added'] === [] && $r['removed'] === [] && $GLOBALS['options'][ACHORD_INQUIRY_OPTION] === $before, '没有实际改动时不写设置');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = null;
+$r = ($set['execute_callback'])(['add' => ['new@example.com']]);
+check(str_contains($GLOBALS['options'][ACHORD_INQUIRY_OPTION]['blocklist'], "spam@example.com\n@bad.test\n203.0.113.0/24\nnew@example.com") && $GLOBALS['options'][ACHORD_INQUIRY_OPTION]['turnstile_site_key'] === 'site', '没保存过设置时，在主题给的默认名单上加，主题的其他默认值一起存下');
+$GLOBALS['options'][ACHORD_INQUIRY_OPTION] = $saved_options;
 
 echo $failures ? "\n$failures failed\n" : "\nall passed\n";
 exit($failures ? 1 : 0);
