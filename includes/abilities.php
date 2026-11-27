@@ -120,14 +120,16 @@ function achord_inquiry_forget_options(): void
  * Add and remove blocklist entries and save the blocklist, one entry per line. The rest of 询盘设置 is saved as it is
  * (theme defaults included, as saving the settings page does), so only the blocklist changes.
  *
- * The whole read-change-save runs under a lock and starts from the saved settings, not this request's cached copy, so
- * two calls at once cannot each save their own list over the other's. Afterwards the saved list is read back: if it is
- * not what was meant (the database refused the write), the call fails instead of reporting entries as added or removed.
+ * The save is a compare-and-swap on the option row: read the stored value, apply the change to it, and write only if
+ * the row still holds what was read. If anyone saved in between (another call, the settings page, /wp/v2/settings),
+ * nothing is written and the change is applied again to what they saved, so no one's change is lost; after a few
+ * rounds of that the call gives up and asks to try again. A lock keeps two calls of this ability from racing each
+ * other to begin with. A database error fails the call instead of reporting entries as added or removed.
  */
 function achord_inquiry_update_blocklist(array $add, array $remove)
 {
     if (!achord_inquiry_lock('blocklist', 10.0)) {
-        return new WP_Error('achord_inquiry_busy', '另一个请求正在改询盘黑名单，请稍后再试。', ['status' => 409]);
+        return achord_inquiry_blocklist_busy();
     }
     try {
         return achord_inquiry_update_blocklist_locked($add, $remove);
@@ -136,48 +138,65 @@ function achord_inquiry_update_blocklist(array $add, array $remove)
     }
 }
 
+function achord_inquiry_blocklist_busy(): WP_Error
+{
+    return new WP_Error('achord_inquiry_busy', '询盘设置正在被别的请求修改，请稍后再试。', ['status' => 409]);
+}
+
 function achord_inquiry_update_blocklist_locked(array $add, array $remove)
 {
+    global $wpdb;
     $clean = static function (array $items): array {
         $items = array_map(static fn($item): string => is_scalar($item) ? strtolower(trim((string) $item)) : '', $items);
         return array_values(array_unique(array_filter($items, 'strlen')));
     };
     $add = $clean($add);
     $remove = $clean($remove);
-    achord_inquiry_forget_options();
-    $entries = achord_inquiry_blocklist();
-    $result = ['added' => [], 'removed' => [], 'already_listed' => [], 'not_listed' => [], 'invalid' => []];
 
-    foreach ($remove as $entry) {
-        $at = array_search($entry, $entries, true);
-        if ($at === false) {
-            $result['not_listed'][] = $entry;
-            continue;
-        }
-        unset($entries[$at]);
-        $result['removed'][] = $entry;
-    }
-    foreach ($add as $entry) {
-        if (!achord_inquiry_valid_block_entry($entry)) {
-            $result['invalid'][] = $entry;
-        } elseif (in_array($entry, $entries, true)) {
-            $result['already_listed'][] = $entry;
-        } else {
-            $entries[] = $entry;
-            $result['added'][] = $entry;
-        }
-    }
+    for ($round = 0; $round < 5; $round++) {
+        $stored = $wpdb->get_var($wpdb->prepare("SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", ACHORD_INQUIRY_OPTION));
+        $options = achord_inquiry_options($stored === null ? null : maybe_unserialize($stored));
+        $entries = achord_inquiry_blocklist((string) $options['blocklist']);
+        $result = ['added' => [], 'removed' => [], 'already_listed' => [], 'not_listed' => [], 'invalid' => []];
 
-    if ($result['added'] !== [] || $result['removed'] !== []) {
+        foreach ($remove as $entry) {
+            $at = array_search($entry, $entries, true);
+            if ($at === false) {
+                $result['not_listed'][] = $entry;
+                continue;
+            }
+            unset($entries[$at]);
+            $result['removed'][] = $entry;
+        }
+        foreach ($add as $entry) {
+            if (!achord_inquiry_valid_block_entry($entry)) {
+                $result['invalid'][] = $entry;
+            } elseif (in_array($entry, $entries, true)) {
+                $result['already_listed'][] = $entry;
+            } else {
+                $entries[] = $entry;
+                $result['added'][] = $entry;
+            }
+        }
         $entries = array_values($entries);
-        $options = achord_inquiry_options();
+        if ($result['added'] === [] && $result['removed'] === []) {
+            return $result + ['entries' => $entries, 'count' => count($entries)];
+        }
+
         $options['blocklist'] = implode("\n", $entries);
-        // update_option() also answers false when nothing changed, so the saved list itself is the check.
-        update_option(ACHORD_INQUIRY_OPTION, $options);
+        $value = maybe_serialize(achord_inquiry_sanitize_options($options));
+        $written = $stored === null
+            ? $wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, 'yes')", ACHORD_INQUIRY_OPTION, $value))
+            : $wpdb->query($wpdb->prepare("UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s", $value, ACHORD_INQUIRY_OPTION, $stored));
+        // Whatever happened, this request's cached copy of the settings is out of date now.
         achord_inquiry_forget_options();
-        if (achord_inquiry_blocklist() !== $entries) {
+        if ($written === false) {
             return new WP_Error('achord_inquiry_not_saved', '询盘黑名单没有存进去（数据库写入失败），名单没有改动，请稍后再试。', ['status' => 500]);
         }
+        if ((int) $written === 1) {
+            return $result + ['entries' => $entries, 'count' => count($entries)];
+        }
+        // 0 rows: someone saved the settings since we read them. Apply the change again to what they saved.
     }
-    return $result + achord_inquiry_blocklist_report();
+    return achord_inquiry_blocklist_busy();
 }

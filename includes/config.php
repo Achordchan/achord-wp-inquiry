@@ -65,7 +65,8 @@ const ACHORD_INQUIRY_OPTION = 'achord_inquiry_options';
  * The settings of 设置 → 询盘设置. Until they are saved there, a theme's existing values can stand in through
  * achord_inquiry_default_options (so moving to the plugin needs nothing typed again).
  */
-function achord_inquiry_options(): array
+/** With $saved_value, the settings as they would read with that saved value (null: never saved) instead of the stored one. */
+function achord_inquiry_options($saved_value = null): array
 {
     $defaults = [
         'recipient' => '',
@@ -87,7 +88,7 @@ function achord_inquiry_options(): array
         'alert_secret' => '',
     ];
     $defaults = array_merge($defaults, array_intersect_key((array) apply_filters('achord_inquiry_default_options', $defaults), $defaults));
-    $saved = get_option(ACHORD_INQUIRY_OPTION, null);
+    $saved = func_num_args() ? $saved_value : get_option(ACHORD_INQUIRY_OPTION, null);
     return is_array($saved) ? array_merge($defaults, array_intersect_key($saved, $defaults)) : $defaults;
 }
 

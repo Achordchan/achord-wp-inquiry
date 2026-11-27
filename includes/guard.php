@@ -135,10 +135,10 @@ function achord_inquiry_take_slot(string $kind, string $key, int $limit, int $se
     return $taken === 1;
 }
 
-/** The blocklist entries as typed, lower-cased, without blanks or duplicates. */
-function achord_inquiry_blocklist(): array
+/** The blocklist entries as typed (the saved blocklist, or $text), lower-cased, without blanks or duplicates. */
+function achord_inquiry_blocklist(?string $text = null): array
 {
-    $entries = preg_split('/[\s,;]+/', strtolower((string) achord_inquiry_options()['blocklist'])) ?: [];
+    $entries = preg_split('/[\s,;]+/', strtolower($text ?? (string) achord_inquiry_options()['blocklist'])) ?: [];
     return array_values(array_unique(array_filter(array_map('trim', $entries), 'strlen')));
 }
 
