@@ -108,11 +108,35 @@ function achord_inquiry_valid_block_entry(string $entry): bool
     return (bool) filter_var($entry, FILTER_VALIDATE_IP);
 }
 
+/** Forget this request's copy of 询盘设置, so the next read comes from the database (another request may have saved since). */
+function achord_inquiry_forget_options(): void
+{
+    wp_cache_delete(ACHORD_INQUIRY_OPTION, 'options');
+    wp_cache_delete('alloptions', 'options');
+    wp_cache_delete('notoptions', 'options');
+}
+
 /**
  * Add and remove blocklist entries and save the blocklist, one entry per line. The rest of 询盘设置 is saved as it is
  * (theme defaults included, as saving the settings page does), so only the blocklist changes.
+ *
+ * The whole read-change-save runs under a lock and starts from the saved settings, not this request's cached copy, so
+ * two calls at once cannot each save their own list over the other's. Afterwards the saved list is read back: if it is
+ * not what was meant (the database refused the write), the call fails instead of reporting entries as added or removed.
  */
-function achord_inquiry_update_blocklist(array $add, array $remove): array
+function achord_inquiry_update_blocklist(array $add, array $remove)
+{
+    if (!achord_inquiry_lock('blocklist', 10.0)) {
+        return new WP_Error('achord_inquiry_busy', '另一个请求正在改询盘黑名单，请稍后再试。', ['status' => 409]);
+    }
+    try {
+        return achord_inquiry_update_blocklist_locked($add, $remove);
+    } finally {
+        achord_inquiry_unlock('blocklist');
+    }
+}
+
+function achord_inquiry_update_blocklist_locked(array $add, array $remove)
 {
     $clean = static function (array $items): array {
         $items = array_map(static fn($item): string => is_scalar($item) ? strtolower(trim((string) $item)) : '', $items);
@@ -120,6 +144,7 @@ function achord_inquiry_update_blocklist(array $add, array $remove): array
     };
     $add = $clean($add);
     $remove = $clean($remove);
+    achord_inquiry_forget_options();
     $entries = achord_inquiry_blocklist();
     $result = ['added' => [], 'removed' => [], 'already_listed' => [], 'not_listed' => [], 'invalid' => []];
 
@@ -144,9 +169,15 @@ function achord_inquiry_update_blocklist(array $add, array $remove): array
     }
 
     if ($result['added'] !== [] || $result['removed'] !== []) {
+        $entries = array_values($entries);
         $options = achord_inquiry_options();
-        $options['blocklist'] = implode("\n", array_values($entries));
+        $options['blocklist'] = implode("\n", $entries);
+        // update_option() also answers false when nothing changed, so the saved list itself is the check.
         update_option(ACHORD_INQUIRY_OPTION, $options);
+        achord_inquiry_forget_options();
+        if (achord_inquiry_blocklist() !== $entries) {
+            return new WP_Error('achord_inquiry_not_saved', '询盘黑名单没有存进去（数据库写入失败），名单没有改动，请稍后再试。', ['status' => 500]);
+        }
     }
     return $result + achord_inquiry_blocklist_report();
 }

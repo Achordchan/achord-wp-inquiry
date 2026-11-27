@@ -11,7 +11,7 @@ License: GPLv2 or later
 == Changelog ==
 
 = 0.7.0 =
-* 询盘黑名单可经接口改：WordPress 6.9 起登记两项能力（abilities），`achord-inquiry/get-blocklist` 读名单、`achord-inquiry/update-blocklist` 加/删条目，都要管理员权限。只改黑名单，其他设置不读不写；格式不对的条目（不是邮箱、@域名、IP、IP 段）不保存并在结果里列出。WordPress.com 连接器能直接调用，不用再进后台填。
+* 询盘黑名单可经接口改：WordPress 6.9 起登记两项能力（abilities），`achord-inquiry/get-blocklist` 读名单、`achord-inquiry/update-blocklist` 加/删条目，都要管理员权限。只改黑名单，其他设置不读不写；格式不对的条目（不是邮箱、@域名、IP、IP 段）不保存并在结果里列出。WordPress.com 连接器能直接调用，不用再进后台填。两个请求同时改时排队（拿不到锁就报「稍后再试」），存完读回核对，没存进去就报错、不说已加。
 
 = 0.6.0 =
 * 验证码加载不出来时询盘不再丢：主题的表单脚本发现 Cloudflare 验证码加载不出来（Facebook/Instagram 内置浏览器、拦了 challenges.cloudflare.com 的网络），带上 `{prefix}turnstile_unavailable` 照常提交；本站连不上 Cloudflare 校验时也一样。询盘照收、照发邮件和钉钉，标「未经人机验证」，黑名单、限流、垃圾筛查照常。同一 IP 每小时最多 3 条、全站每天最多 30 条，超过仍要验证码。询盘设置里可关（默认开）。
